@@ -13,12 +13,16 @@ def candle(i, close, high=None, low=None, volume=1000):
     return Candle(25, start, start + timedelta(minutes=5), close, high, low, close, volume, True, 300)
 
 
-def test_v2_anatomy_is_available_before_signal():
-    detector = PullbackDetector(
+def make_detector():
+    return PullbackDetector(
         instrument_id=25,
-        config={**PullbackDetector.default_config(), "min_history": 5, "atr_period": 3},
+        config={**PullbackDetector.default_config(), "live_mode": False, "min_history": 5, "atr_period": 3},
         audit_root="/tmp/pullback-v2-detector-tests",
     )
+
+
+def test_v2_anatomy_is_available_before_signal():
+    detector = make_detector()
     detector.update(candle(0, 100, 102, 99))
     anatomy = detector.anatomy()
     assert anatomy["instrument_id"] == 25
@@ -29,11 +33,7 @@ def test_v2_anatomy_is_available_before_signal():
 
 
 def test_v2_anatomy_tracks_completed_5m_history():
-    detector = PullbackDetector(
-        instrument_id=25,
-        config={**PullbackDetector.default_config(), "min_history": 5, "atr_period": 3},
-        audit_root="/tmp/pullback-v2-detector-tests",
-    )
+    detector = make_detector()
     for i, close in enumerate([100, 103, 106, 104, 105]):
         detector.update(candle(i, close, close + 1, close - 1))
     anatomy = detector.anatomy()
