@@ -37,7 +37,7 @@ class DashboardData:
         self.root = Path(data_root)
         self.state = state
         self._lock = threading.Lock()
-        self._cache: tuple[float, dict] | None = None
+        self._cache: tuple[tuple[float, str, str], dict] | None = None
 
     def _universe(self) -> list[dict]:
         path = self.root / "universe.csv"
@@ -55,13 +55,16 @@ class DashboardData:
     def snapshot(self) -> dict:
         now = datetime.now(timezone.utc)
         minute_file = self._runtime_file("normalized")
-        cache_key = minute_file.stat().st_mtime if minute_file.exists() else 0.0
+        cache_key = (
+            minute_file.stat().st_mtime if minute_file.exists() else 0.0,
+            str(self.state.get("status", "starting")),
+            str(self.state.get("last_error") or ""),
+        )
         with self._lock:
             if self._cache and self._cache[0] == cache_key:
                 return self._cache[1]
 
             universe = self._universe()
-            by_id = {str(row.get("security_id")): row for row in universe}
             latest: dict[str, dict] = {}
             for line in _read_tail(minute_file):
                 try:
