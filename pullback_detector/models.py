@@ -50,5 +50,8 @@ class PullbackSignal:
     impulse_start: Decimal
     impulse_end: Decimal
     retracement: float
-    score: float
-    reason: str
+    trigger_price: Decimal
+    invalidation_level: Decimal
+    confidence_score: float
+    experimental_v1: bool = True
+    reason: str = ""
