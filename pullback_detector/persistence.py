@@ -4,6 +4,7 @@ import json
 import os
 from dataclasses import asdict
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 from .models import Candle, Tick
@@ -12,6 +13,8 @@ from .models import Candle, Tick
 def _jsonable(value):
     if isinstance(value, datetime):
         return value.astimezone(timezone.utc).isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
     return value
 
 
