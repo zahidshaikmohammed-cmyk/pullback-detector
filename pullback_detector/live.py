@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from datetime import datetime, time, timezone
 from pathlib import Path
@@ -18,31 +19,41 @@ logger = logging.getLogger(__name__)
 LIVE_ANATOMY: dict[int, dict] = {}
 
 
-def _publish_anatomy(detectors: dict[int, PullbackDetector], instrument_id: int) -> None:
+def _persist_anatomy(data_root: str | Path, instrument_id: int, anatomy: dict) -> None:
+    root = Path(data_root) / "anatomy"
+    root.mkdir(parents=True, exist_ok=True)
+    target = root / f"{instrument_id}.json"
+    tmp = target.with_suffix(".tmp")
+    try:
+        tmp.write_text(json.dumps(anatomy, default=str, separators=(",", ":")), encoding="utf-8")
+        tmp.replace(target)
+    except OSError:
+        logger.exception("failed to persist anatomy instrument_id=%s", instrument_id)
+
+
+def _publish_anatomy(detectors: dict[int, PullbackDetector], instrument_id: int, data_root: str | Path | None = None) -> None:
     detector = detectors.get(instrument_id)
     if detector is not None:
-        LIVE_ANATOMY[instrument_id] = detector.anatomy()
+        anatomy = detector.anatomy()
+        LIVE_ANATOMY[instrument_id] = anatomy
+        if data_root is not None:
+            _persist_anatomy(data_root, instrument_id, anatomy)
 
 
-def _emit_v2_signal(detectors: dict[int, PullbackDetector], candle, store: EventStore, lifecycle: PullbackLifecycleEngine) -> None:
+def _emit_v2_signal(detectors: dict[int, PullbackDetector], candle, store: EventStore, lifecycle: PullbackLifecycleEngine, data_root: str | Path | None = None) -> None:
     detector = detectors.get(candle.instrument_id)
     if detector is None:
         return
     signal = detector.update(candle)
-    _publish_anatomy(detectors, candle.instrument_id)
+    _publish_anatomy(detectors, candle.instrument_id, data_root)
     if signal is None:
         return
     store.signal(signal)
     setup = lifecycle.trigger(signal, candle)
     logger.info(
         "EXPERIMENTAL_V2_PULLBACK_SIGNAL instrument_id=%s timestamp=%s direction=%s trigger=%s invalidation=%s health=%s classification=%s setup_id=%s",
-        signal.instrument_id,
-        signal.timestamp.isoformat(),
-        signal.direction,
-        signal.trigger_price,
-        signal.invalidation_level,
-        signal.health_score,
-        signal.classification,
+        signal.instrument_id, signal.timestamp.isoformat(), signal.direction, signal.trigger_price,
+        signal.invalidation_level, signal.health_score, signal.classification,
         setup.snapshot.signal_id if setup else "duplicate_or_cooldown",
     )
 
@@ -70,27 +81,12 @@ async def run_live(settings: Settings, duration_seconds: int = 600) -> dict:
     dedupe = PacketDeduplicator(settings.dedupe_capacity)
     one_min = CandleAggregator(60)
     five_min = CandleAggregator(300)
-    lifecycle = PullbackLifecycleEngine(
-        settings.data_root,
-        target_1_multiple=settings.pullback_target_1_multiple,
-        target_2_multiple=settings.pullback_target_2_multiple,
-        cooldown_seconds=settings.pullback_cooldown_seconds,
-        expiry_seconds=settings.pullback_expiry_seconds,
-    )
+    lifecycle = PullbackLifecycleEngine(settings.data_root, target_1_multiple=settings.pullback_target_1_multiple, target_2_multiple=settings.pullback_target_2_multiple, cooldown_seconds=settings.pullback_cooldown_seconds, expiry_seconds=settings.pullback_expiry_seconds)
 
-    # V2 is stateful per instrument and requires its instrument identity at construction.
-    # Do not pass the removed V1 lookback/retrace/trend parameters here: V2 owns its
-    # deterministic thresholds and loads the canonical rule set itself.
-    detectors = {
-        instrument.security_id: PullbackDetector(
-            instrument_id=instrument.security_id,
-            audit_root=settings.data_root,
-        )
-        for instrument in instruments
-    }
+    detectors = {instrument.security_id: PullbackDetector(instrument_id=instrument.security_id, audit_root=settings.data_root) for instrument in instruments}
     LIVE_ANATOMY.clear()
     for instrument in instruments:
-        _publish_anatomy(detectors, instrument.security_id)
+        _publish_anatomy(detectors, instrument.security_id, settings.data_root)
     deadline = asyncio.get_running_loop().time() + duration_seconds
 
     async for payload, tick, received_at in client.stream(subscriptions, request_code=17):
@@ -104,52 +100,31 @@ async def run_live(settings: Settings, duration_seconds: int = 600) -> dict:
         health.packets += 1
         if tick is None:
             continue
-
         normalized_tick, source_skew = normalize_live_tick_clock(tick, received_at, settings.max_future_seconds)
         if source_skew is not None:
-            logger.warning(
-                "Dhan source clock skew %.1fs for security_id=%s; raw_source_ts=%s normalized_ts=%s receive_ts=%s",
-                source_skew, tick.instrument_id, tick.timestamp.isoformat(), normalized_tick.timestamp.isoformat(), received_at.isoformat(),
-            )
+            logger.warning("Dhan source clock skew %.1fs for security_id=%s; raw_source_ts=%s normalized_ts=%s receive_ts=%s", source_skew, tick.instrument_id, tick.timestamp.isoformat(), normalized_tick.timestamp.isoformat(), received_at.isoformat())
             tick = normalized_tick
-
         try:
             validate_tick(tick, received_at, settings.max_future_seconds, settings.max_tick_age_seconds)
         except ValueError as exc:
             health.malformed_packets += 1
             logger.warning("discarding invalid tick security_id=%s: %s", tick.instrument_id, exc)
             continue
-
         health.record_tick(tick, received_at)
         store.tick(received_at, tick)
         lifecycle.update_tick(tick)
-
         for candle in one_min.flush(tick.timestamp):
-            store.candle(candle)
-            health.candles_1m += 1
+            store.candle(candle); health.candles_1m += 1
         for candle in five_min.flush(tick.timestamp):
-            store.candle(candle)
-            health.candles_5m += 1
-            lifecycle.update_candle(candle)
-            _emit_v2_signal(detectors, candle, store, lifecycle)
-
-        one_min.update(tick)
-        five_min.update(tick)
-        logger.info(
-            "LIVE_DHAN_TICK security_id=%s price=%s qty=%s source_ts=%s normalized_ts=%s receive_ts=%s",
-            tick.instrument_id, tick.price, tick.quantity,
-            (tick.source_timestamp or tick.timestamp).isoformat(), tick.timestamp.isoformat(), received_at.isoformat(),
-        )
+            store.candle(candle); health.candles_5m += 1; lifecycle.update_candle(candle); _emit_v2_signal(detectors, candle, store, lifecycle, settings.data_root)
+        one_min.update(tick); five_min.update(tick)
+        logger.info("LIVE_DHAN_TICK security_id=%s price=%s qty=%s source_ts=%s normalized_ts=%s receive_ts=%s", tick.instrument_id, tick.price, tick.quantity, (tick.source_timestamp or tick.timestamp).isoformat(), tick.timestamp.isoformat(), received_at.isoformat())
 
     now = datetime.now(timezone.utc)
     for candle in one_min.flush(now):
-        store.candle(candle)
-        health.candles_1m += 1
+        store.candle(candle); health.candles_1m += 1
     for candle in five_min.flush(now):
-        store.candle(candle)
-        health.candles_5m += 1
-        lifecycle.update_candle(candle)
-        _emit_v2_signal(detectors, candle, store, lifecycle)
+        store.candle(candle); health.candles_5m += 1; lifecycle.update_candle(candle); _emit_v2_signal(detectors, candle, store, lifecycle, settings.data_root)
 
     health.reconnects = client.reconnects
     report = health.report(now, len(instruments))
@@ -159,27 +134,18 @@ async def run_live(settings: Settings, duration_seconds: int = 600) -> dict:
     report["alerts_enabled"] = False
     report["active_setup_count"] = len(lifecycle.active)
     report["closed_setup_count"] = len(lifecycle.closed)
-
     market_open = _nse_cash_session_open(now)
     if not market_open:
-        report["market_status"] = "CLOSED"
-        report["session_state"] = "NSE_CASH_SESSION_CLOSED"
+        report["market_status"] = "CLOSED"; report["session_state"] = "NSE_CASH_SESSION_CLOSED"
         if health.ticks == 0:
-            report["dhan_connection_status"] = "session_closed"
-            report["no_live_data"] = True
-            report["last_known_data_retained"] = True
+            report["dhan_connection_status"] = "session_closed"; report["no_live_data"] = True; report["last_known_data_retained"] = True
             logger.info("NSE cash session closed; no live ticks is a normal state, not a service failure")
     else:
-        report["market_status"] = "OPEN"
-        report["session_state"] = "NSE_CASH_SESSION_OPEN"
-
+        report["market_status"] = "OPEN"; report["session_state"] = "NSE_CASH_SESSION_OPEN"
     store.health(report)
-
     if health.ticks == 0 and market_open:
         raise RuntimeError("LIVE_VALIDATION_FAILED: no real Dhan market packets were received during this open-session validation window")
     if health.ticks > 0 and len(health.instruments_seen) < settings.min_live_instruments:
-        raise RuntimeError(
-            f"LIVE_VALIDATION_FAILED: only {len(health.instruments_seen)} instruments produced packets; minimum={settings.min_live_instruments}"
-        )
+        raise RuntimeError(f"LIVE_VALIDATION_FAILED: only {len(health.instruments_seen)} instruments produced packets; minimum={settings.min_live_instruments}")
     logger.info("LIVE_VALIDATION_SUCCESS report=%s", report)
     return report
