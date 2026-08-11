@@ -87,7 +87,7 @@ async def service_loop() -> None:
 def main() -> None:
     global _DASHBOARD_DATA
     settings = get_settings(); _DASHBOARD_DATA = DashboardData(settings.data_root, _STATE)
-    logging.basicConfig(level=getattr(settings.log_level.upper(), "INFO"), format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO), format="%(asctime)s %(levelname)s %(name)s %(message)s")
     threading.Thread(target=serve_http, name="http-server", daemon=True).start()
     try: asyncio.run(service_loop())
     except KeyboardInterrupt: LOGGER.info("shutdown requested")
