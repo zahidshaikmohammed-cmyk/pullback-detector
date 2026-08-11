@@ -50,9 +50,11 @@ async def run_live(settings: Settings, duration_seconds: int = 600) -> dict:
         )
         if source_skew is not None:
             logger.warning(
-                "Dhan source clock skew %.1fs for security_id=%s; using receipt timestamp %s for live candle timing",
+                "Dhan source clock skew %.1fs for security_id=%s; raw_source_ts=%s normalized_ts=%s receive_ts=%s",
                 source_skew,
                 tick.instrument_id,
+                tick.timestamp.isoformat(),
+                normalized_tick.timestamp.isoformat(),
                 received_at.isoformat(),
             )
             tick = normalized_tick
@@ -73,7 +75,15 @@ async def run_live(settings: Settings, duration_seconds: int = 600) -> dict:
             health.candles_5m += 1
         one_min.update(tick)
         five_min.update(tick)
-        logger.info("LIVE_DHAN_TICK security_id=%s price=%s qty=%s event_ts=%s", tick.instrument_id, tick.price, tick.quantity, tick.timestamp.isoformat())
+        logger.info(
+            "LIVE_DHAN_TICK security_id=%s price=%s qty=%s source_ts=%s normalized_ts=%s receive_ts=%s",
+            tick.instrument_id,
+            tick.price,
+            tick.quantity,
+            (tick.source_timestamp or tick.timestamp).isoformat(),
+            tick.timestamp.isoformat(),
+            received_at.isoformat(),
+        )
 
     now = datetime.now(timezone.utc)
     for candle in one_min.flush(now):
