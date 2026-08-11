@@ -1,0 +1,26 @@
+timezone: Asia/Kolkata
+trend:
+  ema_fast: 20
+  ema_slow: 50
+  ema_long: 200
+  atr_period: 14
+  minimum_bars: 20
+  strong_score: 75
+  directional_margin: 10
+volume:
+  rolling_median: 20
+  very_low: 0.50
+  low: 0.80
+  normal: 1.20
+  elevated: 1.50
+  high: 2.00
+chop:
+  clean: 25
+  mild: 45
+  choppy: 70
+  severe: 70
+alignment:
+  bullish_bearish_conflict_margin: 10
+hard_failures:
+  severe_chop_score: 70
+  stale_seconds: 300
