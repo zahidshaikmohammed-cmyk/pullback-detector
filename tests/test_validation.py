@@ -31,7 +31,7 @@ def test_future_tick_rejected():
 
 
 def test_future_tick_is_normalized_during_nse_session_and_source_time_preserved():
-    received = datetime(2026, 8, 11, 5, 30, 0, tzinfo=timezone.utc)  # 11:00 IST
+    received = datetime(2026, 8, 11, 5, 30, 0, tzinfo=timezone.utc)
     source = received + timedelta(hours=4)
     tick = Tick(1, source, Decimal("100"), 1)
     normalized, skew = normalize_live_tick_clock(tick, received, max_future_seconds=5)
@@ -43,10 +43,16 @@ def test_future_tick_is_normalized_during_nse_session_and_source_time_preserved(
 
 
 def test_future_tick_is_not_normalized_outside_nse_session():
-    received = datetime(2026, 8, 11, 11, 52, 0, tzinfo=timezone.utc)  # 17:22 IST
+    received = datetime(2026, 8, 11, 11, 52, 0, tzinfo=timezone.utc)
     source = received + timedelta(hours=4)
     tick = Tick(1, source, Decimal("100"), 1)
     normalized, skew = normalize_live_tick_clock(tick, received, max_future_seconds=5)
     assert skew is None
     assert normalized.timestamp == tick.timestamp
     assert normalized.source_timestamp == source
+
+
+def test_index_benchmark_tick_is_valid_market_data():
+    received = datetime.now(timezone.utc)
+    tick = Tick(13, received, Decimal("25000"), 1, "IDX_I")
+    validate_tick(tick, received)
