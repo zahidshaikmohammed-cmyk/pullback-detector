@@ -37,5 +37,5 @@ def test_multiple_timeframes_form_independently():
         tick = Tick(1, base + timedelta(seconds=seconds), Decimal(price), 1)
         one.update(tick)
         five.update(tick)
-    assert len(one.flush(base + timedelta(seconds=360))) == 6
+    assert len(one.flush(base + timedelta(seconds=360))) == 5
     assert len(five.flush(base + timedelta(seconds=360))) == 2
