@@ -1,45 +1,50 @@
 import json
 import logging
 from collections.abc import AsyncIterator
-from datetime import datetime, timezone
-from decimal import Decimal
+from urllib.parse import urlencode
 
+import websockets
+
+from .dhan_protocol import parse_market_packet
 from .models import Tick
 
 logger = logging.getLogger(__name__)
 
 
 class DhanWebSocketClient:
-    """Dhan v2 feed adapter. Credentials are supplied at runtime, never persisted."""
+    """DhanHQ v2 live-feed adapter using the documented binary response protocol."""
 
-    def __init__(self, client_id: str, access_token: str, ws_url: str):
+    def __init__(self, client_id: str, access_token: str, ws_url: str = "wss://api-feed.dhan.co"):
         self.client_id = client_id
         self.access_token = access_token
         self.ws_url = ws_url
 
-    def _headers(self) -> dict[str, str]:
+    def _url(self) -> str:
         if not self.client_id or not self.access_token:
             raise RuntimeError("DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN are required for live ingestion")
-        return {"access-token": self.access_token, "client-id": self.client_id}
+        return f"{self.ws_url}?{urlencode({'version': '2', 'token': self.access_token, 'clientId': self.client_id, 'authType': '2'})}"
 
     @staticmethod
-    def parse_tick(payload: str | bytes) -> Tick:
-        data = json.loads(payload)
-        # Adapter expects a normalized Dhan message shape at the boundary.
-        return Tick(
-            instrument_id=int(data["security_id"]),
-            timestamp=datetime.fromtimestamp(float(data["timestamp"]), tz=timezone.utc),
-            price=Decimal(str(data["price"])),
-            quantity=int(data.get("quantity", 0)),
-        )
+    def subscription_message(instruments: list[dict], request_code: int = 15) -> str:
+        if not 1 <= len(instruments) <= 100:
+            raise ValueError("Dhan accepts at most 100 instruments per subscription message")
+        return json.dumps({
+            "RequestCode": request_code,
+            "InstrumentCount": len(instruments),
+            "InstrumentList": instruments,
+        })
 
-    async def stream(self, subscriptions: list[dict]) -> AsyncIterator[Tick]:
-        """Connect and yield normalized ticks. Network execution is intentionally isolated here."""
-        import websockets
-
-        headers = self._headers()
-        logger.info("connecting to Dhan feed with %d subscriptions", len(subscriptions))
-        async with websockets.connect(self.ws_url, additional_headers=headers) as socket:
-            await socket.send(json.dumps({"action": "subscribe", "instruments": subscriptions}))
+    async def stream(self, subscriptions: list[dict], request_code: int = 15) -> AsyncIterator[Tick]:
+        if not subscriptions:
+            raise ValueError("subscriptions cannot be empty")
+        async with websockets.connect(self._url(), ping_interval=None) as socket:
+            for offset in range(0, len(subscriptions), 100):
+                await socket.send(self.subscription_message(subscriptions[offset:offset + 100], request_code))
+            logger.info("connected to Dhan v2 feed; subscriptions=%d", len(subscriptions))
             async for message in socket:
-                yield self.parse_tick(message)
+                if not isinstance(message, bytes):
+                    logger.warning("ignoring non-binary Dhan feed message")
+                    continue
+                tick = parse_market_packet(message)
+                if tick is not None:
+                    yield tick
