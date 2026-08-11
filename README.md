@@ -4,10 +4,10 @@ Production-grade market-data foundation for Indian liquid-stock pullback researc
 
 ## Current stage
 
-**Stage:** verified-connectivity engineering  
-**Final pullback rules:** intentionally not implemented in the live path  
+**Stage:** live connectivity + experimental V1 detection engineering  
+**V1:** **EXPERIMENTAL — NOT PROFITABILITY VALIDATED — NOT INVESTMENT ADVICE**  
 **Trading alerts:** intentionally disabled  
-**Live Dhan validation:** only considered successful after real binary Dhan packets are received and preserved in an evidence artifact.  
+**Live Dhan validation:** considered successful only after real NSE-session binary Dhan packets are accepted and preserved in an evidence artifact.  
 **Credentials:** environment variables / GitHub Secrets / Render secret environment variables only.
 
 ## Connectivity architecture
@@ -19,11 +19,29 @@ Production-grade market-data foundation for Indian liquid-stock pullback researc
 5. Persist every raw binary packet and every accepted normalized tick.
 6. Decode Dhan's little-endian binary protocol with strict packet-length validation.
 7. Reject malformed, stale, future, and exact-duplicate events.
-8. Aggregate accepted trade ticks into independent 1-minute and 5-minute candles.
-9. Emit a health report with instruments received, packet/tick counts, last tick timestamps, latency, staleness, reconnects, malformed/duplicate counts, and candle counts.
-10. Fail the live validation job if no real packets arrive or fewer than the configured number of instruments produce packets.
+8. During the NSE cash session only, a verified large positive source-clock skew may be normalized to receipt time for live ordering/candle timing; the original Dhan source timestamp and measured skew are preserved separately. Outside the NSE cash session, future timestamps remain rejected.
+9. Aggregate accepted trade ticks into independent 1-minute and 5-minute candles.
+10. Emit a health report with connection status, accepted/rejected packets, producing instruments, timestamps, latency, staleness, reconnects, and candle counts.
+11. Fail the live validation cycle if no real packets arrive or fewer than the configured number of instruments produce accepted ticks.
+12. Feed accepted 5-minute candles into the experimental V1 pullback detector. The detector emits no signal unless its configured pullback anatomy and continuation trigger criteria are met.
 
-Dhan documents the live feed as JSON requests with binary responses, a common 8-byte response header, Quote packet code `4`, and Quote fields including LTP, last-traded quantity, trade timestamp and cumulative volume. citeturn1search0turn2search0
+Dhan documents the live feed as JSON requests with binary responses, a common 8-byte little-endian response header, Quote packet code `4`, and Quote fields including LTP, last-traded quantity, trade timestamp (EPOCH), and cumulative volume. citeturn1search0turn2search0
+
+## Experimental V1 signal
+
+Every emitted V1 signal contains:
+
+- instrument / symbol identifier
+- timestamp
+- direction
+- impulse metrics
+- retracement metrics
+- trigger price
+- invalidation level
+- confidence score
+- explicit experimental V1 label
+
+Signals are persisted under `data/runtime/signals/`. No profitability claim is made.
 
 ## Live validation
 
@@ -38,9 +56,20 @@ It stores the following evidence as a workflow artifact:
 - raw binary packets as hex JSONL
 - normalized ticks JSONL
 - closed 1-minute/5-minute candles JSONL
+- experimental V1 signals JSONL when generated
 - `health.jsonl`
 
 A successful workflow run is the authoritative evidence that real Dhan packets were received. A successful unit-test run is **not** live validation.
+
+## Candle volume semantics
+
+The live path subscribes to Dhan Quote packets so it receives last-traded quantity. Candle volume is the sum of last-traded quantities for accepted ticks. Dhan's cumulative day-volume field is retained on normalized ticks for diagnostics but is **not** summed repeatedly into candle volume.
+
+A candle is persisted as complete only after its wall-clock interval has ended. The first live candle after connection is naturally partial if the process starts mid-minute; it is not represented as a complete historical candle.
+
+## Alerts
+
+Trading alerts remain disabled. The system never sends fake/test trading alerts. Alert credentials, if any, are not surfaced in logs or source code.
 
 ## Local development
 
@@ -61,19 +90,9 @@ python -m pullback_detector
 
 Never put credentials in source, configuration committed to Git, logs, artifacts, or Docker images.
 
-## Candle volume semantics
-
-The live path subscribes to Dhan Quote packets so it receives last-traded quantity. Candle volume is the sum of last-traded quantities for accepted ticks. Dhan's cumulative day-volume field is retained on normalized ticks for diagnostics but is **not** summed repeatedly into candle volume.
-
-A candle is persisted as complete only after its wall-clock interval has ended. The first live candle after connection is naturally partial if the process starts mid-minute; it is not represented as a complete historical candle.
-
-## Scope boundary
-
-The current live service is data-only. It does **not** invoke the pullback detector and does **not** send trading alerts. Detection and alert behavior will be added only after connectivity, event quality, candle formation, persistence, and empirical validation are independently established.
-
 ## Deployment
 
-Docker and Render worker configuration remain available, with Dhan credentials supplied only as secret environment variables. The scheduled GitHub Actions workflow is the primary connectivity evidence path because its logs and artifacts provide an auditable record of the live session.
+Render runs the existing Docker web service with the health endpoint exposed on the platform-provided `PORT`. Auto-deploy remains enabled from `main`.
 
 ## Official Dhan references
 
