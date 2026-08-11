@@ -1,0 +1,27 @@
+name: live-dhan-smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      security_id:
+        description: "Verified Dhan security ID"
+        required: true
+      exchange_segment:
+        description: "Dhan exchange segment"
+        required: true
+        default: NSE_EQ
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    env:
+      DHAN_CLIENT_ID: ${{ secrets.DHAN_CLIENT_ID }}
+      DHAN_ACCESS_TOKEN: ${{ secrets.DHAN_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e "."
+      - run: python scripts/live_smoke.py "${{ inputs.security_id }}" --exchange-segment "${{ inputs.exchange_segment }}"
