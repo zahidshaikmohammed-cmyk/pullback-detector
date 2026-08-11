@@ -5,7 +5,9 @@ from .models import Candle, PullbackSignal
 
 
 class PullbackDetector:
-    """Rule-based baseline detector; thresholds are explicit and backtestable."""
+    """Experimental V1 baseline detector; thresholds are explicit and backtestable."""
+
+    LABEL = "EXPERIMENTAL_V1_NOT_PROFITABILITY_VALIDATED"
 
     def __init__(self, lookback_bars=20, min_retrace=0.25, max_retrace=0.618, min_trend_strength=0.0):
         if lookback_bars < 3:
@@ -28,14 +30,22 @@ class PullbackDetector:
         impulse = impulse_end - impulse_start
         if impulse == 0:
             return None
-        retrace = float((impulse_end - bars[-1].close) / impulse) if impulse > 0 else float((bars[-1].close - impulse_end) / (-impulse))
+        retrace = (
+            float((impulse_end - bars[-1].close) / impulse)
+            if impulse > 0
+            else float((bars[-1].close - impulse_end) / (-impulse))
+        )
         if not self.min_retrace <= retrace <= self.max_retrace:
             return None
         direction = "LONG" if impulse > 0 else "SHORT"
         strength = abs(float(impulse / impulse_start)) if impulse_start else 0.0
         if strength < self.min_trend_strength:
             return None
+
+        trigger_price = bars[-1].close
+        invalidation_level = min(bar.low for bar in bars[-2:]) if direction == "LONG" else max(bar.high for bar in bars[-2:])
         score = min(1.0, retrace / self.max_retrace)
+        reason = f"{direction.lower()} impulse followed by {retrace:.1%} retracement; continuation trigger evaluated on latest 5m close"
         return PullbackSignal(
             instrument_id=candle.instrument_id,
             timestamp=candle.end,
@@ -43,6 +53,9 @@ class PullbackDetector:
             impulse_start=Decimal(impulse_start),
             impulse_end=Decimal(impulse_end),
             retracement=retrace,
-            score=score,
-            reason=f"{direction.lower()} impulse followed by {retrace:.1%} retracement",
+            trigger_price=trigger_price,
+            invalidation_level=Decimal(invalidation_level),
+            confidence_score=score,
+            experimental_v1=True,
+            reason=f"{self.LABEL}: {reason}",
         )
