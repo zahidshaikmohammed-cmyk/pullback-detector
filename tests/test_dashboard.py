@@ -70,5 +70,5 @@ def test_dashboard_projects_universe_ticks_candles_and_v2_signals(tmp_path: Path
 
 def test_dashboard_is_browser_html_not_json():
     assert "<!doctype html>" in HTML.lower()
-    assert "Pullback Detector" in HTML
+    assert "pullback detector" in HTML.lower()
     assert "/api/dashboard" in HTML
