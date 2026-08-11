@@ -30,17 +30,23 @@ def test_future_tick_rejected():
         validate_tick(tick, received, max_future_seconds=5)
 
 
-def test_future_tick_is_normalized_during_nse_session():
+def test_future_tick_is_normalized_during_nse_session_and_source_time_preserved():
     received = datetime(2026, 8, 11, 5, 30, 0, tzinfo=timezone.utc)  # 11:00 IST
-    tick = Tick(1, received + timedelta(hours=4), Decimal("100"), 1)
+    source = received + timedelta(hours=4)
+    tick = Tick(1, source, Decimal("100"), 1)
     normalized, skew = normalize_live_tick_clock(tick, received, max_future_seconds=5)
     assert skew == 14400
     assert normalized.timestamp == received
+    assert normalized.source_timestamp == source
+    assert normalized.source_clock_skew_seconds == 14400
+    validate_tick(normalized, received, max_future_seconds=5)
 
 
 def test_future_tick_is_not_normalized_outside_nse_session():
     received = datetime(2026, 8, 11, 11, 52, 0, tzinfo=timezone.utc)  # 17:22 IST
-    tick = Tick(1, received + timedelta(hours=4), Decimal("100"), 1)
+    source = received + timedelta(hours=4)
+    tick = Tick(1, source, Decimal("100"), 1)
     normalized, skew = normalize_live_tick_clock(tick, received, max_future_seconds=5)
     assert skew is None
     assert normalized.timestamp == tick.timestamp
+    assert normalized.source_timestamp == source
