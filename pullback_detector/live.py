@@ -14,6 +14,14 @@ from .universe import InstrumentUniverse
 from .validation import PacketDeduplicator, normalize_live_tick_clock, validate_tick
 
 logger = logging.getLogger(__name__)
+LIVE_ANATOMY: dict[int, dict] = {}
+LIVE_ANATOMY_LOCK = asyncio.Lock()
+
+
+def _publish_anatomy(detectors: dict[int, PullbackDetector], instrument_id: int) -> None:
+    detector = detectors.get(instrument_id)
+    if detector is not None:
+        LIVE_ANATOMY[instrument_id] = detector.anatomy()
 
 
 def _emit_v1_signal(detectors: dict[int, PullbackDetector], candle, store: EventStore) -> None:
@@ -21,6 +29,7 @@ def _emit_v1_signal(detectors: dict[int, PullbackDetector], candle, store: Event
     if detector is None:
         return
     signal = detector.update(candle)
+    _publish_anatomy(detectors, candle.instrument_id)
     if signal is None:
         return
     store.signal(signal)
@@ -61,6 +70,9 @@ async def run_live(settings: Settings, duration_seconds: int = 600) -> dict:
         )
         for instrument in instruments
     }
+    LIVE_ANATOMY.clear()
+    for instrument in instruments:
+        _publish_anatomy(detectors, instrument.security_id)
     deadline = asyncio.get_running_loop().time() + duration_seconds
 
     async for payload, tick, received_at in client.stream(subscriptions, request_code=17):
