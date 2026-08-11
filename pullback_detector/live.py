@@ -24,7 +24,7 @@ def _publish_anatomy(detectors: dict[int, PullbackDetector], instrument_id: int)
         LIVE_ANATOMY[instrument_id] = detector.anatomy()
 
 
-def _emit_v1_signal(detectors: dict[int, PullbackDetector], candle, store: EventStore, lifecycle: PullbackLifecycleEngine) -> None:
+def _emit_v2_signal(detectors: dict[int, PullbackDetector], candle, store: EventStore, lifecycle: PullbackLifecycleEngine) -> None:
     detector = detectors.get(candle.instrument_id)
     if detector is None:
         return
@@ -32,24 +32,23 @@ def _emit_v1_signal(detectors: dict[int, PullbackDetector], candle, store: Event
     _publish_anatomy(detectors, candle.instrument_id)
     if signal is None:
         return
-    # Original V1 signal remains append-only and is never mutated by lifecycle tracking.
     store.signal(signal)
     setup = lifecycle.trigger(signal, candle)
     logger.info(
-        "EXPERIMENTAL_V1_PULLBACK_SIGNAL instrument_id=%s timestamp=%s direction=%s trigger=%s invalidation=%s confidence=%.3f label=%s setup_id=%s",
+        "EXPERIMENTAL_V2_PULLBACK_SIGNAL instrument_id=%s timestamp=%s direction=%s trigger=%s invalidation=%s health=%s classification=%s setup_id=%s",
         signal.instrument_id,
         signal.timestamp.isoformat(),
         signal.direction,
         signal.trigger_price,
         signal.invalidation_level,
-        signal.confidence_score,
-        PullbackDetector.LABEL,
+        signal.health_score,
+        signal.classification,
         setup.snapshot.signal_id if setup else "duplicate_or_cooldown",
     )
 
 
 async def run_live(settings: Settings, duration_seconds: int = 600) -> dict:
-    """Run the live Dhan pipeline and feed accepted 5m candles into experimental V1 detection/lifecycle."""
+    """Run the live Dhan pipeline and feed accepted completed 5m candles into Healthy Pullback V2."""
     instruments = InstrumentUniverse.fetch()
     store = EventStore(settings.data_root)
     InstrumentUniverse.write_snapshot(instruments, Path(settings.data_root) / "universe.csv")
@@ -71,12 +70,14 @@ async def run_live(settings: Settings, duration_seconds: int = 600) -> dict:
         cooldown_seconds=settings.pullback_cooldown_seconds,
         expiry_seconds=settings.pullback_expiry_seconds,
     )
+
+    # V2 is stateful per instrument and requires its instrument identity at construction.
+    # Do not pass the removed V1 lookback/retrace/trend parameters here: V2 owns its
+    # deterministic thresholds and loads the canonical rule set itself.
     detectors = {
         instrument.security_id: PullbackDetector(
-            lookback_bars=settings.pullback_lookback_bars,
-            min_retrace=settings.pullback_min_retrace,
-            max_retrace=settings.pullback_max_retrace,
-            min_trend_strength=settings.pullback_min_trend_strength,
+            instrument_id=instrument.security_id,
+            audit_root=settings.data_root,
         )
         for instrument in instruments
     }
@@ -123,7 +124,7 @@ async def run_live(settings: Settings, duration_seconds: int = 600) -> dict:
             store.candle(candle)
             health.candles_5m += 1
             lifecycle.update_candle(candle)
-            _emit_v1_signal(detectors, candle, store, lifecycle)
+            _emit_v2_signal(detectors, candle, store, lifecycle)
 
         one_min.update(tick)
         five_min.update(tick)
@@ -141,13 +142,13 @@ async def run_live(settings: Settings, duration_seconds: int = 600) -> dict:
         store.candle(candle)
         health.candles_5m += 1
         lifecycle.update_candle(candle)
-        _emit_v1_signal(detectors, candle, store, lifecycle)
+        _emit_v2_signal(detectors, candle, store, lifecycle)
 
     health.reconnects = client.reconnects
     report = health.report(now, len(instruments))
     report["real_dhan_packets_received"] = health.ticks > 0
     report["verification"] = "Dhan official scrip master + Dhan market quote + live WebSocket"
-    report["v1_detector"] = PullbackDetector.LABEL
+    report["v2_detector"] = PullbackDetector.LABEL
     report["alerts_enabled"] = False
     report["active_setup_count"] = len(lifecycle.active)
     report["closed_setup_count"] = len(lifecycle.closed)
