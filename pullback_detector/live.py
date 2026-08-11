@@ -11,7 +11,7 @@ from .dhan_http import DhanMarketQuote
 from .detector import PullbackDetector
 from .health import ConnectivityHealth
 from .lifecycle import PullbackLifecycleEngine
-from .market_context import MarketContextEngine
+from .market_context import MarketContextEngine, benchmark_alignment
 from .persistence import EventStore
 from .universe import InstrumentUniverse
 from .validation import PacketDeduplicator, normalize_live_tick_clock, validate_tick
@@ -33,20 +33,36 @@ def _session_metrics(context: MarketContextEngine, ts: datetime) -> dict:
     return {"session_open":str(day[0].open),"session_high":str(max(b.high for b in day)),"session_low":str(min(b.low for b in day))}
 
 
-def _publish_anatomy(detectors, contexts, instrument_id: int, data_root: str | Path | None = None) -> None:
+def _equity_context(contexts, benchmark_contexts, instrument_id: int) -> dict:
+    context = contexts.get(instrument_id)
+    stock = dict(context.snapshot() if context else {})
+    benchmarks = {name: ctx.snapshot() for name, ctx in benchmark_contexts.items()}
+    alignment = benchmark_alignment(stock, benchmarks)
+    stock["benchmark_context"] = benchmarks
+    stock["stock_vs_market_alignment"] = alignment["status"]
+    stock["stock_vs_market_alignment_score"] = alignment["score"]
+    stock["stock_vs_market_compared_timeframes"] = alignment["compared_timeframes"]
+    stock["market_alignment"] = alignment["status"]
+    return stock
+
+
+def _publish_anatomy(detectors, contexts, benchmark_contexts, instrument_id: int, data_root: str | Path | None = None) -> None:
     detector=detectors.get(instrument_id); context=contexts.get(instrument_id)
     if detector is not None:
-        anatomy=dict(context.snapshot() if context else {}); anatomy.update(_session_metrics(context, datetime.now(timezone.utc)) if context else {}); anatomy.update(detector.last_state or detector.anatomy())
-        anatomy["market_context"]=context.snapshot() if context else {}; anatomy["market_context_version"]="1.0"
+        anatomy=_equity_context(contexts, benchmark_contexts, instrument_id)
+        anatomy.update(_session_metrics(context, datetime.now(timezone.utc)) if context else {})
+        anatomy.update(detector.last_state or detector.anatomy())
+        anatomy["market_context"]=_equity_context(contexts, benchmark_contexts, instrument_id)
+        anatomy["market_context_version"]="1.1"
         LIVE_ANATOMY[instrument_id]=anatomy
         if data_root is not None:_persist_anatomy(data_root,instrument_id,anatomy)
 
 
-def _emit_v2_signal(detectors,contexts,candle,store,lifecycle,data_root=None):
+def _emit_v2_signal(detectors,contexts,benchmark_contexts,candle,store,lifecycle,data_root=None):
     detector=detectors.get(candle.instrument_id); context=contexts.get(candle.instrument_id)
     if detector is None:return
-    if context:detector.set_market_context(context.snapshot())
-    signal=detector.update(candle);_publish_anatomy(detectors,contexts,candle.instrument_id,data_root)
+    detector.set_market_context(_equity_context(contexts, benchmark_contexts, candle.instrument_id))
+    signal=detector.update(candle);_publish_anatomy(detectors,contexts,benchmark_contexts,candle.instrument_id,data_root)
     if signal is None:return
     store.signal(signal);setup=lifecycle.trigger(signal,candle)
     logger.info("EXPERIMENTAL_V2_PULLBACK_SIGNAL instrument_id=%s timestamp=%s direction=%s trigger=%s invalidation=%s health=%s classification=%s setup_id=%s",signal.instrument_id,signal.timestamp.isoformat(),signal.direction,signal.trigger_price,signal.invalidation_level,signal.health_score,signal.classification,setup.snapshot.signal_id if setup else "duplicate_or_cooldown")
@@ -57,18 +73,30 @@ def _nse_cash_session_open(now: datetime) -> bool:
 
 
 async def run_live(settings: Settings,duration_seconds: int=600)->dict:
-    instruments=InstrumentUniverse.fetch();store=EventStore(settings.data_root);InstrumentUniverse.write_snapshot(instruments,Path(settings.data_root)/"universe.csv")
-    verifier=DhanMarketQuote(settings.dhan_client_id,settings.dhan_access_token);verifier.ltp(instruments);logger.info("verified %d NSE_EQ security IDs through Dhan market quote",len(instruments))
-    subscriptions=[{"ExchangeSegment":i.exchange_segment,"SecurityId":str(i.security_id)} for i in instruments];client=DhanWebSocketClient(settings.dhan_client_id,settings.dhan_access_token,settings.dhan_ws_url,settings.max_reconnects)
+    instruments=InstrumentUniverse.fetch();benchmarks=InstrumentUniverse.fetch_benchmarks();store=EventStore(settings.data_root)
+    InstrumentUniverse.write_snapshot(instruments,Path(settings.data_root)/"universe.csv")
+    if benchmarks: InstrumentUniverse.write_snapshot(benchmarks,Path(settings.data_root)/"benchmarks.csv")
+    verifier=DhanMarketQuote(settings.dhan_client_id,settings.dhan_access_token);verifier.ltp(instruments)
+    logger.info("verified %d NSE_EQ security IDs through Dhan market quote",len(instruments))
+    if benchmarks:
+        try: verifier.ltp(benchmarks); logger.info("verified %d benchmark index Security IDs through Dhan market quote",len(benchmarks))
+        except Exception as exc: logger.warning("benchmark LTP verification unavailable; retaining INSUFFICIENT_DATA semantics: %s",exc)
+    subscriptions=[{"ExchangeSegment":i.exchange_segment,"SecurityId":str(i.security_id)} for i in instruments+benchmarks]
+    client=DhanWebSocketClient(settings.dhan_client_id,settings.dhan_access_token,settings.dhan_ws_url,settings.max_reconnects)
     health=ConnectivityHealth();dedupe=PacketDeduplicator(settings.dedupe_capacity);one_min=CandleAggregator(60);five_min=CandleAggregator(300)
     lifecycle=PullbackLifecycleEngine(settings.data_root,target_1_multiple=settings.pullback_target_1_multiple,target_2_multiple=settings.pullback_target_2_multiple,cooldown_seconds=settings.pullback_cooldown_seconds,expiry_seconds=settings.pullback_expiry_seconds)
-    detectors={i.security_id:PullbackDetector(instrument_id=i.security_id,audit_root=settings.data_root) for i in instruments};contexts={i.security_id:MarketContextEngine(i.security_id) for i in instruments}
+    detectors={i.security_id:PullbackDetector(instrument_id=i.security_id,audit_root=settings.data_root) for i in instruments}
+    contexts={i.security_id:MarketContextEngine(i.security_id) for i in instruments}
+    benchmark_contexts={i.symbol:MarketContextEngine(i.security_id) for i in benchmarks}
     LIVE_ANATOMY.clear()
     for i in instruments:
         for c in store.recent_candles(i.security_id,60,2500):contexts[i.security_id].update_candle(c)
-        for c in store.recent_candles(i.security_id,300,2500):
-            contexts[i.security_id].update_candle(c);detectors[i.security_id].history.append(c);detectors[i.security_id]._seen_candles.add(c.start)
-        _publish_anatomy(detectors,contexts,i.security_id,settings.data_root)
+        for c in store.recent_candles(i.security_id,300,2500):contexts[i.security_id].update_candle(c);detectors[i.security_id].history.append(c);detectors[i.security_id]._seen_candles.add(c.start)
+    for benchmark in benchmarks:
+        ctx=benchmark_contexts[benchmark.symbol]
+        for c in store.recent_candles(benchmark.security_id,60,2500):ctx.update_candle(c)
+        for c in store.recent_candles(benchmark.security_id,300,2500):ctx.update_candle(c)
+    for i in instruments:_publish_anatomy(detectors,contexts,benchmark_contexts,i.security_id,settings.data_root)
     deadline=asyncio.get_running_loop().time()+duration_seconds
     async for payload,tick,received_at in client.stream(subscriptions,request_code=17):
         if asyncio.get_running_loop().time()>=deadline:break
@@ -80,26 +108,37 @@ async def run_live(settings: Settings,duration_seconds: int=600)->dict:
         if source_skew is not None:logger.warning("Dhan source clock skew %.1fs for security_id=%s; raw_source_ts=%s normalized_ts=%s receive_ts=%s",source_skew,tick.instrument_id,tick.timestamp.isoformat(),normalized_tick.timestamp.isoformat(),received_at.isoformat());tick=normalized_tick
         try:validate_tick(tick,received_at,settings.max_future_seconds,settings.max_tick_age_seconds)
         except ValueError as exc:health.malformed_packets+=1;logger.warning("discarding invalid tick security_id=%s: %s",tick.instrument_id,exc);continue
-        health.record_tick(tick,received_at);store.tick(received_at,tick);lifecycle.update_tick(tick);context=contexts.get(tick.instrument_id)
+        health.record_tick(tick,received_at);store.tick(received_at,tick);lifecycle.update_tick(tick)
+        context=contexts.get(tick.instrument_id)
+        benchmark_for_tick=next((ctx for ctx in benchmark_contexts.values() if ctx.instrument_id==tick.instrument_id),None)
         if context:context.update_tick(tick)
+        if benchmark_for_tick:benchmark_for_tick.update_tick(tick)
         for candle in one_min.flush(tick.timestamp):
-            store.candle(candle);health.candles_1m+=1;context=contexts.get(candle.instrument_id)
-            if context:context.update_candle(candle);_publish_anatomy(detectors,contexts,candle.instrument_id,settings.data_root)
+            store.candle(candle);health.candles_1m+=1
+            context=contexts.get(candle.instrument_id);benchmark_for_candle=next((ctx for ctx in benchmark_contexts.values() if ctx.instrument_id==candle.instrument_id),None)
+            if context:context.update_candle(candle);_publish_anatomy(detectors,contexts,benchmark_contexts,candle.instrument_id,settings.data_root)
+            if benchmark_for_candle:benchmark_for_candle.update_candle(candle)
         for candle in five_min.flush(tick.timestamp):
-            store.candle(candle);health.candles_5m+=1;context=contexts.get(candle.instrument_id)
+            store.candle(candle);health.candles_5m+=1
+            context=contexts.get(candle.instrument_id);benchmark_for_candle=next((ctx for ctx in benchmark_contexts.values() if ctx.instrument_id==candle.instrument_id),None)
             if context:context.update_candle(candle)
-            lifecycle.update_candle(candle);_emit_v2_signal(detectors,contexts,candle,store,lifecycle,settings.data_root)
-        one_min.update(tick);five_min.update(tick);logger.info("LIVE_DHAN_TICK security_id=%s price=%s qty=%s source_ts=%s normalized_ts=%s receive_ts=%s",tick.instrument_id,tick.price,tick.quantity,(tick.source_timestamp or tick.timestamp).isoformat(),tick.timestamp.isoformat(),received_at.isoformat())
+            if benchmark_for_candle:benchmark_for_candle.update_candle(candle)
+            lifecycle.update_candle(candle)
+            if context:_emit_v2_signal(detectors,contexts,benchmark_contexts,candle,store,lifecycle,settings.data_root)
+        one_min.update(tick);five_min.update(tick);logger.info("LIVE_DHAN_TICK security_id=%s segment=%s price=%s qty=%s source_ts=%s normalized_ts=%s receive_ts=%s",tick.instrument_id,tick.exchange_segment,tick.price,tick.quantity,(tick.source_timestamp or tick.timestamp).isoformat(),tick.timestamp.isoformat(),received_at.isoformat())
     now=datetime.now(timezone.utc)
     for candle in one_min.flush(now):
-        store.candle(candle);health.candles_1m+=1;context=contexts.get(candle.instrument_id)
-        if context:context.update_candle(candle);_publish_anatomy(detectors,contexts,candle.instrument_id,settings.data_root)
+        store.candle(candle);health.candles_1m+=1;context=contexts.get(candle.instrument_id);benchmark_for_candle=next((ctx for ctx in benchmark_contexts.values() if ctx.instrument_id==candle.instrument_id),None)
+        if context:context.update_candle(candle);_publish_anatomy(detectors,contexts,benchmark_contexts,candle.instrument_id,settings.data_root)
+        if benchmark_for_candle:benchmark_for_candle.update_candle(candle)
     for candle in five_min.flush(now):
-        store.candle(candle);health.candles_5m+=1;context=contexts.get(candle.instrument_id)
+        store.candle(candle);health.candles_5m+=1;context=contexts.get(candle.instrument_id);benchmark_for_candle=next((ctx for ctx in benchmark_contexts.values() if ctx.instrument_id==candle.instrument_id),None)
         if context:context.update_candle(candle)
-        lifecycle.update_candle(candle);_emit_v2_signal(detectors,contexts,candle,store,lifecycle,settings.data_root)
-    for instrument in instruments:_publish_anatomy(detectors,contexts,instrument.security_id,settings.data_root)
-    now=datetime.now(timezone.utc);health.reconnects=client.reconnects;report=health.report(now,len(instruments));report.update({"real_dhan_packets_received":health.ticks>0,"verification":"Dhan official scrip master + Dhan market quote + live WebSocket","v2_detector":PullbackDetector.LABEL,"market_context_engine":"deterministic_v1","alerts_enabled":False,"active_setup_count":len(lifecycle.active),"closed_setup_count":len(lifecycle.closed)})
+        if benchmark_for_candle:benchmark_for_candle.update_candle(candle)
+        lifecycle.update_candle(candle)
+        if context:_emit_v2_signal(detectors,contexts,benchmark_contexts,candle,store,lifecycle,settings.data_root)
+    for instrument in instruments:_publish_anatomy(detectors,contexts,benchmark_contexts,instrument.security_id,settings.data_root)
+    now=datetime.now(timezone.utc);health.reconnects=client.reconnects;report=health.report(now,len(instruments));report.update({"real_dhan_packets_received":health.ticks>0,"verification":"Dhan official scrip master + Dhan market quote + live WebSocket","v2_detector":PullbackDetector.LABEL,"market_context_engine":"deterministic_v1","benchmark_instruments":[{"symbol":b.symbol,"security_id":b.security_id,"exchange_segment":b.exchange_segment} for b in benchmarks],"benchmark_count":len(benchmarks),"alerts_enabled":False,"active_setup_count":len(lifecycle.active),"closed_setup_count":len(lifecycle.closed)})
     market_open=_nse_cash_session_open(now)
     if not market_open:
         report.update({"market_status":"CLOSED","session_state":"NSE_CASH_SESSION_CLOSED"})
@@ -107,5 +146,6 @@ async def run_live(settings: Settings,duration_seconds: int=600)->dict:
     else:report.update({"market_status":"OPEN","session_state":"NSE_CASH_SESSION_OPEN"})
     store.health(report)
     if health.ticks==0 and market_open:raise RuntimeError("LIVE_VALIDATION_FAILED: no real Dhan market packets were received during this open-session validation window")
-    if health.ticks>0 and len(health.instruments_seen)<settings.min_live_instruments:raise RuntimeError(f"LIVE_VALIDATION_FAILED: only {len(health.instruments_seen)} instruments produced packets; minimum={settings.min_live_instruments}")
+    equity_seen=sum(1 for instrument_id in health.instruments_seen if instrument_id in detectors)
+    if health.ticks>0 and equity_seen<settings.min_live_instruments:raise RuntimeError(f"LIVE_VALIDATION_FAILED: only {equity_seen} equity instruments produced packets; minimum={settings.min_live_instruments}")
     logger.info("LIVE_VALIDATION_SUCCESS report=%s",report);return report
