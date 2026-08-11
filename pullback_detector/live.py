@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from pathlib import Path
 
 from .candles import CandleAggregator
@@ -45,6 +45,13 @@ def _emit_v2_signal(detectors: dict[int, PullbackDetector], candle, store: Event
         signal.classification,
         setup.snapshot.signal_id if setup else "duplicate_or_cooldown",
     )
+
+
+def _nse_cash_session_open(now: datetime) -> bool:
+    local = now.astimezone(__import__("zoneinfo").ZoneInfo("Asia/Kolkata"))
+    if local.weekday() >= 5:
+        return False
+    return time(9, 15) <= local.time() < time(15, 30)
 
 
 async def run_live(settings: Settings, duration_seconds: int = 600) -> dict:
@@ -152,11 +159,25 @@ async def run_live(settings: Settings, duration_seconds: int = 600) -> dict:
     report["alerts_enabled"] = False
     report["active_setup_count"] = len(lifecycle.active)
     report["closed_setup_count"] = len(lifecycle.closed)
+
+    market_open = _nse_cash_session_open(now)
+    if not market_open:
+        report["market_status"] = "CLOSED"
+        report["session_state"] = "NSE_CASH_SESSION_CLOSED"
+        if health.ticks == 0:
+            report["dhan_connection_status"] = "session_closed"
+            report["no_live_data"] = True
+            report["last_known_data_retained"] = True
+            logger.info("NSE cash session closed; no live ticks is a normal state, not a service failure")
+    else:
+        report["market_status"] = "OPEN"
+        report["session_state"] = "NSE_CASH_SESSION_OPEN"
+
     store.health(report)
 
-    if health.ticks == 0:
-        raise RuntimeError("LIVE_VALIDATION_FAILED: no real Dhan market packets were received during this session")
-    if len(health.instruments_seen) < settings.min_live_instruments:
+    if health.ticks == 0 and market_open:
+        raise RuntimeError("LIVE_VALIDATION_FAILED: no real Dhan market packets were received during this open-session validation window")
+    if health.ticks > 0 and len(health.instruments_seen) < settings.min_live_instruments:
         raise RuntimeError(
             f"LIVE_VALIDATION_FAILED: only {len(health.instruments_seen)} instruments produced packets; minimum={settings.min_live_instruments}"
         )
