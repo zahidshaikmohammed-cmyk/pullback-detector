@@ -7,6 +7,7 @@ from .candles import CandleAggregator
 from .config import Settings
 from .dhan import DhanWebSocketClient
 from .dhan_http import DhanMarketQuote
+from .detector import PullbackDetector
 from .health import ConnectivityHealth
 from .persistence import EventStore
 from .universe import InstrumentUniverse
@@ -15,8 +16,28 @@ from .validation import PacketDeduplicator, normalize_live_tick_clock, validate_
 logger = logging.getLogger(__name__)
 
 
+def _emit_v1_signal(detectors: dict[int, PullbackDetector], candle, store: EventStore) -> None:
+    detector = detectors.get(candle.instrument_id)
+    if detector is None:
+        return
+    signal = detector.update(candle)
+    if signal is None:
+        return
+    store.signal(signal)
+    logger.info(
+        "EXPERIMENTAL_V1_PULLBACK_SIGNAL instrument_id=%s timestamp=%s direction=%s trigger=%s invalidation=%s confidence=%.3f label=%s",
+        signal.instrument_id,
+        signal.timestamp.isoformat(),
+        signal.direction,
+        signal.trigger_price,
+        signal.invalidation_level,
+        signal.confidence_score,
+        PullbackDetector.LABEL,
+    )
+
+
 async def run_live(settings: Settings, duration_seconds: int = 600) -> dict:
-    """Run a data-only Dhan connectivity session; no signals or alerts."""
+    """Run the live Dhan pipeline and feed accepted 5m candles into experimental V1 detection."""
     instruments = InstrumentUniverse.fetch()
     store = EventStore(settings.data_root)
     InstrumentUniverse.write_snapshot(instruments, Path(settings.data_root) / "universe.csv")
@@ -31,6 +52,15 @@ async def run_live(settings: Settings, duration_seconds: int = 600) -> dict:
     dedupe = PacketDeduplicator(settings.dedupe_capacity)
     one_min = CandleAggregator(60)
     five_min = CandleAggregator(300)
+    detectors = {
+        instrument.security_id: PullbackDetector(
+            lookback_bars=settings.pullback_lookback_bars,
+            min_retrace=settings.pullback_min_retrace,
+            max_retrace=settings.pullback_max_retrace,
+            min_trend_strength=settings.pullback_min_trend_strength,
+        )
+        for instrument in instruments
+    }
     deadline = asyncio.get_running_loop().time() + duration_seconds
 
     async for payload, tick, received_at in client.stream(subscriptions, request_code=17):
@@ -65,14 +95,18 @@ async def run_live(settings: Settings, duration_seconds: int = 600) -> dict:
             health.malformed_packets += 1
             logger.warning("discarding invalid tick security_id=%s: %s", tick.instrument_id, exc)
             continue
+
         health.record_tick(tick, received_at)
         store.tick(received_at, tick)
+
         for candle in one_min.flush(tick.timestamp):
             store.candle(candle)
             health.candles_1m += 1
         for candle in five_min.flush(tick.timestamp):
             store.candle(candle)
             health.candles_5m += 1
+            _emit_v1_signal(detectors, candle, store)
+
         one_min.update(tick)
         five_min.update(tick)
         logger.info(
@@ -92,11 +126,14 @@ async def run_live(settings: Settings, duration_seconds: int = 600) -> dict:
     for candle in five_min.flush(now):
         store.candle(candle)
         health.candles_5m += 1
+        _emit_v1_signal(detectors, candle, store)
 
     health.reconnects = client.reconnects
     report = health.report(now, len(instruments))
     report["real_dhan_packets_received"] = health.ticks > 0
     report["verification"] = "Dhan official scrip master + Dhan market quote + live WebSocket"
+    report["v1_detector"] = PullbackDetector.LABEL
+    report["alerts_enabled"] = False
     store.health(report)
 
     if health.ticks == 0:
