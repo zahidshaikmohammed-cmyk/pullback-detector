@@ -1,8 +1,13 @@
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 from hashlib import sha256
+from zoneinfo import ZoneInfo
+
+from dataclasses import replace
 
 from .models import Tick
+
+IST = ZoneInfo("Asia/Kolkata")
 
 
 class PacketDeduplicator:
@@ -42,3 +47,24 @@ def validate_tick(tick: Tick, received_at: datetime, max_future_seconds: int = 5
         raise ValueError(f"tick timestamp is in the future by {-age:.1f}s")
     if age > max_age_seconds:
         raise ValueError(f"stale tick is {age:.1f}s old")
+
+
+def normalize_live_tick_clock(tick: Tick, received_at: datetime, max_future_seconds: int = 5) -> tuple[Tick, float | None]:
+    """Normalize a clearly skewed Dhan source clock to receipt time during NSE cash hours.
+
+    The original source timestamp is retained in the raw packet. We only apply this
+    emergency live-feed normalization when the source timestamp is in the future and
+    the receipt itself falls inside the NSE cash session. Outside market hours the
+    source timestamp remains authoritative and is rejected as invalid/stale.
+    """
+    received_at = received_at.astimezone(timezone.utc)
+    source = tick.timestamp.astimezone(timezone.utc)
+    skew = (source - received_at).total_seconds()
+    if skew <= max_future_seconds:
+        return tick, None
+
+    local_time = received_at.astimezone(IST).time()
+    if not (time(9, 15) <= local_time <= time(15, 30)):
+        return tick, None
+
+    return replace(tick, timestamp=received_at), skew
