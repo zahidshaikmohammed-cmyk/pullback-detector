@@ -1,4 +1,5 @@
 timezone: Asia/Kolkata
+live_mode: true
 min_history: 50
 atr_period: 14
 min_impulse_atr: 1.25
