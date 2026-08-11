@@ -1,0 +1,17 @@
+services:
+  - type: worker
+    name: pullback-detector
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: DHAN_CLIENT_ID
+        sync: false
+      - key: DHAN_ACCESS_TOKEN
+        sync: false
+      - key: ALERT_WEBHOOK_URL
+        sync: false
