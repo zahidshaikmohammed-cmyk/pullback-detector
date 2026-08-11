@@ -94,9 +94,9 @@ def _direction_context(candles: list[dict]) -> dict:
     momentum = "STRENGTHENING" if len(closes) >= 4 and abs(closes[-1] - closes[-2]) >= abs(closes[-2] - closes[-3]) else "STABLE"
     return {
         "available": True,
-        "day": {"trend": day, "score": 82 if day != "NEUTRAL" else 50},
-        "one_hour": {"trend": one_h, "score": 74 if one_h != "NEUTRAL" else 50},
-        "current": {"trend": current, "score": 88 if current != "NEUTRAL" else 50},
+        "day": {"trend": day},
+        "one_hour": {"trend": one_h},
+        "current": {"trend": current},
         "alignment": f"{alignment} / 3",
         "trend_momentum": momentum,
         "trend_stability": "STABLE",
