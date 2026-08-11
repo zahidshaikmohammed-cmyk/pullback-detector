@@ -34,7 +34,7 @@ def _persist_anatomy(data_root: str | Path, instrument_id: int, anatomy: dict) -
 def _publish_anatomy(detectors: dict[int, PullbackDetector], instrument_id: int, data_root: str | Path | None = None) -> None:
     detector = detectors.get(instrument_id)
     if detector is not None:
-        anatomy = detector.anatomy()
+        anatomy = dict(detector.last_state or detector.anatomy())
         LIVE_ANATOMY[instrument_id] = anatomy
         if data_root is not None:
             _persist_anatomy(data_root, instrument_id, anatomy)
