@@ -13,7 +13,11 @@ class DhanMarketQuote:
         self.timeout = timeout
 
     def ltp(self, instruments: list[Instrument]) -> dict[int, float]:
-        payload = {"NSE_EQ": [i.security_id for i in instruments]}
+        payload: dict[str, list[int]] = {}
+        for instrument in instruments:
+            payload.setdefault(instrument.exchange_segment, []).append(instrument.security_id)
+        if not payload:
+            return {}
         response = httpx.post(
             f"{self.base_url}/marketfeed/ltp",
             headers={"access-token": self.access_token, "client-id": self.client_id, "Content-Type": "application/json"},
@@ -24,8 +28,12 @@ class DhanMarketQuote:
         body = response.json()
         if body.get("status") != "success":
             raise RuntimeError(f"Dhan LTP verification failed: {body}")
-        data = body.get("data", {}).get("NSE_EQ", {})
-        result = {int(k): float(v["last_price"]) for k, v in data.items() if isinstance(v, dict) and "last_price" in v}
+        result: dict[int, float] = {}
+        for segment in payload:
+            data = body.get("data", {}).get(segment, {})
+            for key, value in data.items():
+                if isinstance(value, dict) and "last_price" in value:
+                    result[int(key)] = float(value["last_price"])
         missing = {i.security_id for i in instruments} - set(result)
         if missing:
             raise RuntimeError(f"Dhan LTP verification missing security IDs: {sorted(missing)}")
