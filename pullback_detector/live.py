@@ -11,6 +11,7 @@ from .dhan_http import DhanMarketQuote
 from .detector import PullbackDetector
 from .health import ConnectivityHealth
 from .lifecycle import PullbackLifecycleEngine
+from .market_context import MarketContextEngine
 from .persistence import EventStore
 from .universe import InstrumentUniverse
 from .validation import PacketDeduplicator, normalize_live_tick_clock, validate_tick
@@ -31,21 +32,29 @@ def _persist_anatomy(data_root: str | Path, instrument_id: int, anatomy: dict) -
         logger.exception("failed to persist anatomy instrument_id=%s", instrument_id)
 
 
-def _publish_anatomy(detectors: dict[int, PullbackDetector], instrument_id: int, data_root: str | Path | None = None) -> None:
+def _publish_anatomy(detectors, contexts, instrument_id: int, data_root: str | Path | None = None) -> None:
     detector = detectors.get(instrument_id)
+    context = contexts.get(instrument_id)
     if detector is not None:
-        anatomy = dict(detector.last_state or detector.anatomy())
+        anatomy = dict(context.snapshot() if context else {})
+        anatomy.update(detector.last_state or detector.anatomy())
+        # V2 qualification is authoritative for pullback health; context remains evidence.
+        anatomy["market_context"] = context.snapshot() if context else {}
+        anatomy["market_context_version"] = "1.0"
         LIVE_ANATOMY[instrument_id] = anatomy
         if data_root is not None:
             _persist_anatomy(data_root, instrument_id, anatomy)
 
 
-def _emit_v2_signal(detectors: dict[int, PullbackDetector], candle, store: EventStore, lifecycle: PullbackLifecycleEngine, data_root: str | Path | None = None) -> None:
+def _emit_v2_signal(detectors, contexts, candle, store: EventStore, lifecycle: PullbackLifecycleEngine, data_root: str | Path | None = None) -> None:
     detector = detectors.get(candle.instrument_id)
+    context = contexts.get(candle.instrument_id)
     if detector is None:
         return
+    if context:
+        detector.set_market_context(context.snapshot())
     signal = detector.update(candle)
-    _publish_anatomy(detectors, candle.instrument_id, data_root)
+    _publish_anatomy(detectors, contexts, candle.instrument_id, data_root)
     if signal is None:
         return
     store.signal(signal)
@@ -66,7 +75,7 @@ def _nse_cash_session_open(now: datetime) -> bool:
 
 
 async def run_live(settings: Settings, duration_seconds: int = 600) -> dict:
-    """Run the live Dhan pipeline and feed accepted completed 5m candles into Healthy Pullback V2."""
+    """Run Dhan live data through candles, market context and Healthy Pullback V2."""
     instruments = InstrumentUniverse.fetch()
     store = EventStore(settings.data_root)
     InstrumentUniverse.write_snapshot(instruments, Path(settings.data_root) / "universe.csv")
@@ -84,9 +93,10 @@ async def run_live(settings: Settings, duration_seconds: int = 600) -> dict:
     lifecycle = PullbackLifecycleEngine(settings.data_root, target_1_multiple=settings.pullback_target_1_multiple, target_2_multiple=settings.pullback_target_2_multiple, cooldown_seconds=settings.pullback_cooldown_seconds, expiry_seconds=settings.pullback_expiry_seconds)
 
     detectors = {instrument.security_id: PullbackDetector(instrument_id=instrument.security_id, audit_root=settings.data_root) for instrument in instruments}
+    contexts = {instrument.security_id: MarketContextEngine(instrument.security_id) for instrument in instruments}
     LIVE_ANATOMY.clear()
     for instrument in instruments:
-        _publish_anatomy(detectors, instrument.security_id, settings.data_root)
+        _publish_anatomy(detectors, contexts, instrument.security_id, settings.data_root)
     deadline = asyncio.get_running_loop().time() + duration_seconds
 
     async for payload, tick, received_at in client.stream(subscriptions, request_code=17):
@@ -113,24 +123,42 @@ async def run_live(settings: Settings, duration_seconds: int = 600) -> dict:
         health.record_tick(tick, received_at)
         store.tick(received_at, tick)
         lifecycle.update_tick(tick)
+        context = contexts.get(tick.instrument_id)
+        if context:
+            context.update_tick(tick)
         for candle in one_min.flush(tick.timestamp):
             store.candle(candle); health.candles_1m += 1
+            context = contexts.get(candle.instrument_id)
+            if context: context.update_candle(candle); _publish_anatomy(detectors, contexts, candle.instrument_id, settings.data_root)
         for candle in five_min.flush(tick.timestamp):
-            store.candle(candle); health.candles_5m += 1; lifecycle.update_candle(candle); _emit_v2_signal(detectors, candle, store, lifecycle, settings.data_root)
+            store.candle(candle); health.candles_5m += 1
+            context = contexts.get(candle.instrument_id)
+            if context: context.update_candle(candle)
+            lifecycle.update_candle(candle)
+            _emit_v2_signal(detectors, contexts, candle, store, lifecycle, settings.data_root)
         one_min.update(tick); five_min.update(tick)
         logger.info("LIVE_DHAN_TICK security_id=%s price=%s qty=%s source_ts=%s normalized_ts=%s receive_ts=%s", tick.instrument_id, tick.price, tick.quantity, (tick.source_timestamp or tick.timestamp).isoformat(), tick.timestamp.isoformat(), received_at.isoformat())
 
     now = datetime.now(timezone.utc)
     for candle in one_min.flush(now):
         store.candle(candle); health.candles_1m += 1
+        context = contexts.get(candle.instrument_id)
+        if context: context.update_candle(candle); _publish_anatomy(detectors, contexts, candle.instrument_id, settings.data_root)
     for candle in five_min.flush(now):
-        store.candle(candle); health.candles_5m += 1; lifecycle.update_candle(candle); _emit_v2_signal(detectors, candle, store, lifecycle, settings.data_root)
+        store.candle(candle); health.candles_5m += 1
+        context = contexts.get(candle.instrument_id)
+        if context: context.update_candle(candle)
+        lifecycle.update_candle(candle); _emit_v2_signal(detectors, contexts, candle, store, lifecycle, settings.data_root)
 
+    now = datetime.now(timezone.utc)
+    for instrument in instruments:
+        _publish_anatomy(detectors, contexts, instrument.security_id, settings.data_root)
     health.reconnects = client.reconnects
     report = health.report(now, len(instruments))
     report["real_dhan_packets_received"] = health.ticks > 0
     report["verification"] = "Dhan official scrip master + Dhan market quote + live WebSocket"
     report["v2_detector"] = PullbackDetector.LABEL
+    report["market_context_engine"] = "deterministic_v1"
     report["alerts_enabled"] = False
     report["active_setup_count"] = len(lifecycle.active)
     report["closed_setup_count"] = len(lifecycle.closed)
