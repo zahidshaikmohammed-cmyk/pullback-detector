@@ -24,6 +24,8 @@ class Tick:
     exchange_segment: str = "NSE_EQ"
     cumulative_volume: int | None = None
     feed_response_code: int = 2
+    source_timestamp: datetime | None = None
+    source_clock_skew_seconds: float | None = None
 
 
 @dataclass(frozen=True)
