@@ -2,6 +2,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 from .healthy_pullback_v2 import HealthyPullbackV2
+from .v1_detector import V1PullbackDetector
 
 
 class PullbackDetector(HealthyPullbackV2):
@@ -52,4 +53,5 @@ class PullbackDetector(HealthyPullbackV2):
         return signal
 
 
-__all__ = ["PullbackDetector", "HealthyPullbackV2"]
+# V1 remains importable for historical benchmark tests only. The live pipeline never uses it.
+__all__ = ["PullbackDetector", "HealthyPullbackV2", "V1PullbackDetector"]
