@@ -18,7 +18,8 @@ def test_parse_dhan_ticker_packet():
 def test_parse_dhan_quote_packet_with_quantity_and_volume():
     values = (2450.5, 12, 1786430000, 2449.0, 123456, 100, 120, 2400.0, 2300.0, 2500.0, 2200.0)
     body = struct.pack("<fhifiiiffff", *values)
-    payload = struct.pack("<BhBi", 4, 51, 1, 1333) + body
+    # 8-byte header + 42-byte Quote body = 50-byte packet.
+    payload = struct.pack("<BhBi", 4, 50, 1, 1333) + body
     tick = parse_market_packet(payload)
     assert tick is not None
     assert tick.instrument_id == 1333
