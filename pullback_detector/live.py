@@ -1,0 +1,100 @@
+import asyncio
+import logging
+from datetime import datetime, timezone
+from pathlib import Path
+
+from .candles import CandleAggregator
+from .config import Settings
+from .dhan import DhanWebSocketClient
+from .dhan_http import DhanMarketQuote
+from .health import ConnectivityHealth
+from .persistence import EventStore
+from .universe import InstrumentUniverse
+from .validation import PacketDeduplicator, validate_tick
+
+logger = logging.getLogger(__name__)
+
+
+async def run_live(settings: Settings, duration_seconds: int = 600) -> dict:
+    """Run a data-only Dhan connectivity session.
+
+    This path intentionally has no pullback detector invocation and no alert
+    delivery. It returns a report and raises if real packets do not arrive.
+    """
+    instruments = InstrumentUniverse.fetch()
+    EventStore(settings.data_root).root.mkdir(parents=True, exist_ok=True)
+    store = EventStore(settings.data_root)
+    InstrumentUniverse.write_snapshot(instruments, Path(settings.data_root) / "universe.csv")
+
+    verifier = DhanMarketQuote(settings.dhan_client_id, settings.dhan_access_token)
+    verifier.ltp(instruments)
+    logger.info("verified %d NSE_EQ security IDs through Dhan market quote", len(instruments))
+
+    subscriptions = [{"ExchangeSegment": i.exchange_segment, "SecurityId": str(i.security_id)} for i in instruments]
+    client = DhanWebSocketClient(settings.dhan_client_id, settings.dhan_access_token, settings.dhan_ws_url, settings.max_reconnects)
+    health = ConnectivityHealth()
+    dedupe = PacketDeduplicator(settings.dedupe_capacity)
+    one_min = CandleAggregator(60)
+    five_min = CandleAggregator(300)
+    deadline = asyncio.get_running_loop().time() + duration_seconds
+
+    async for payload, tick, received_at in client.stream(subscriptions, request_code=17):
+        if asyncio.get_running_loop().time() >= deadline:
+            break
+        try:
+            response_code = payload[0] if payload else None
+            store.raw_packet(received_at, payload, response_code)
+            if dedupe.seen(payload):
+                health.duplicate_packets += 1
+                continue
+            health.packets += 1
+            if tick is None:
+                continue
+            try:
+                validate_tick(tick, received_at, settings.max_future_seconds, settings.max_tick_age_seconds)
+            except ValueError as exc:
+                health.malformed_packets += 1
+                logger.warning("discarding invalid tick security_id=%s: %s", tick.instrument_id, exc)
+                continue
+            health.packets -= 1  # record_tick increments the accepted packet count below.
+            health.record_tick(tick, received_at)
+            store.tick(received_at, tick)
+            for candle in one_min.flush(tick.timestamp):
+                store.candle(candle)
+                health.candles_1m += 1
+            for candle in five_min.flush(tick.timestamp):
+                store.candle(candle)
+                health.candles_5m += 1
+            one_min.update(tick)
+            five_min.update(tick)
+            logger.info("LIVE_DHAN_TICK security_id=%s price=%s qty=%s event_ts=%s", tick.instrument_id, tick.price, tick.quantity, tick.timestamp.isoformat())
+        except Exception:
+            health.malformed_packets += 1
+            logger.exception("failed processing Dhan packet")
+
+        if asyncio.get_running_loop().time() >= deadline:
+            break
+
+    now = datetime.now(timezone.utc)
+    for candle in one_min.flush(now):
+        store.candle(candle)
+        health.candles_1m += 1
+    for candle in five_min.flush(now):
+        store.candle(candle)
+        health.candles_5m += 1
+
+    health.reconnects = client.reconnects
+    report = health.report(now, len(instruments))
+    report["real_dhan_packets_received"] = health.ticks > 0
+    report["verification"] = "Dhan official scrip master + Dhan market quote + live WebSocket"
+    store.health(report)
+
+    if health.ticks == 0:
+        raise RuntimeError("LIVE_VALIDATION_FAILED: no real Dhan market packets were received during this session")
+    if health.instrument_count_received < settings.min_live_instruments:
+        raise RuntimeError(
+            f"LIVE_VALIDATION_FAILED: only {health.instrument_count_received} instruments produced packets; "
+            f"minimum={settings.min_live_instruments}"
+        )
+    logger.info("LIVE_VALIDATION_SUCCESS report=%s", report)
+    return report
