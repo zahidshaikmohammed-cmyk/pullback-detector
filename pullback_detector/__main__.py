@@ -12,8 +12,8 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .config import get_settings
-from .dashboard import DashboardData
-from .dashboard_ui import HTML, candle_history
+from .dashboard import DashboardData, HTML
+from .dashboard_ui import candle_history
 from .service import run_live
 
 LOGGER = logging.getLogger(__name__)
@@ -24,7 +24,9 @@ class AppHandler(BaseHTTPRequestHandler):
     def _send(self, status: int, content_type: str, body: bytes) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -85,7 +87,7 @@ async def service_loop() -> None:
 def main() -> None:
     global _DASHBOARD_DATA
     settings = get_settings(); _DASHBOARD_DATA = DashboardData(settings.data_root, _STATE)
-    logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO), format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    logging.basicConfig(level=getattr(settings.log_level.upper(), "INFO"), format="%(asctime)s %(levelname)s %(name)s %(message)s")
     threading.Thread(target=serve_http, name="http-server", daemon=True).start()
     try: asyncio.run(service_loop())
     except KeyboardInterrupt: LOGGER.info("shutdown requested")
