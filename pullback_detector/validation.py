@@ -27,6 +27,8 @@ class PacketDeduplicator:
 def validate_tick(tick: Tick, received_at: datetime, max_future_seconds: int = 5, max_age_seconds: int = 300) -> None:
     if tick.instrument_id <= 0:
         raise ValueError("invalid security ID")
+    if tick.exchange_segment != "NSE_EQ":
+        raise ValueError(f"unexpected exchange segment: {tick.exchange_segment}")
     if tick.price <= 0:
         raise ValueError("invalid non-positive price")
     if tick.quantity < 0:
