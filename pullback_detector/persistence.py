@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
-from .models import Candle, Tick
+from .models import Candle, PullbackSignal, Tick
 
 
 def _jsonable(value):
@@ -56,6 +56,10 @@ class EventStore:
     def candle(self, candle: Candle) -> None:
         day = candle.start.astimezone(timezone.utc).strftime("%Y-%m-%d")
         self._append(self.root / "candles" / f"{day}.jsonl", asdict(candle))
+
+    def signal(self, signal: PullbackSignal) -> None:
+        day = signal.timestamp.astimezone(timezone.utc).strftime("%Y-%m-%d")
+        self._append(self.root / "signals" / f"{day}.jsonl", asdict(signal))
 
     def health(self, report: dict) -> None:
         self._append(self.root / "health.jsonl", report)
