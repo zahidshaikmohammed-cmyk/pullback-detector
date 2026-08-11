@@ -4,11 +4,26 @@ from decimal import Decimal
 
 
 @dataclass(frozen=True)
+class Instrument:
+    security_id: int
+    exchange_segment: str
+    symbol: str
+    trading_symbol: str
+    instrument_type: str
+    series: str = ""
+    isin: str = ""
+    source: str = "dhan_scrip_master"
+
+
+@dataclass(frozen=True)
 class Tick:
     instrument_id: int
     timestamp: datetime
     price: Decimal
     quantity: int = 0
+    exchange_segment: str = "NSE_EQ"
+    cumulative_volume: int | None = None
+    feed_response_code: int = 2
 
 
 @dataclass(frozen=True)
@@ -21,6 +36,8 @@ class Candle:
     low: Decimal
     close: Decimal
     volume: int
+    complete: bool = False
+    timeframe_seconds: int = 300
 
 
 @dataclass(frozen=True)
