@@ -13,9 +13,9 @@ def candle(i, close, low=None, high=None):
 
 def test_detects_long_pullback_with_v1_schema():
     detector=V1PullbackDetector(lookback_bars=5,min_retrace=.2,max_retrace=.7); signal=None
-    for i,close in enumerate([100,105,110,108,107]): signal=detector.update(candle(i,close,low=close-1,high=close+1))
+    for i,close in enumerate([100,105,110,108,106.4]): signal=detector.update(candle(i,close,low=close-1,high=close+1))
     assert signal is not None and signal.direction=="LONG" and .2 <= signal.retracement <= .7
-    assert signal.trigger_price==Decimal("107") and signal.invalidation_level==Decimal("106")
+    assert signal.trigger_price==Decimal("106.4") and signal.invalidation_level==Decimal("105.4")
     assert 0.0 <= signal.confidence_score <= 1.0 and signal.experimental_v1 is True and "EXPERIMENTAL_V1" in signal.reason
 
 
