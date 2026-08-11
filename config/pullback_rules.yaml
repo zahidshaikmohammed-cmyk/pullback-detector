@@ -1,0 +1,37 @@
+timezone: Asia/Kolkata
+min_history: 50
+atr_period: 14
+min_impulse_atr: 1.25
+preferred_impulse_atr: 1.75
+min_impulse_efficiency: 0.50
+preferred_impulse_efficiency: 0.65
+min_directional_candle_ratio: 0.55
+preferred_directional_candle_ratio: 0.65
+max_impulse_countertrend_excursion: 0.35
+warning_body_ratio: 0.45
+min_pullback_depth: 0.15
+normal_pullback_depth_max: 0.60
+deep_pullback_depth_max: 0.75
+max_pullback_candles: 12
+max_relative_pullback_speed: 1.10
+controlled_speed: 0.50
+warning_speed: 0.80
+acceptable_pullback_efficiency: 0.70
+warning_pullback_efficiency: 0.80
+max_pullback_efficiency: 0.85
+countertrend_body_multiplier: 1.25
+max_internal_swings: 4
+volume_warning_ratio: 1.20
+volume_reject_ratio: 1.30
+volume_efficiency_reject: 0.70
+continuation_atr: 0.10
+candidate_score_min: 75
+live_alert_score_min: 82
+cooldown_candles: 3
+stale_seconds: 300
+opening: ["09:15", "10:00"]
+morning: ["10:00", "12:00"]
+midday: ["12:00", "14:00"]
+afternoon: ["14:00", "15:15"]
+continuous_end: "15:30"
+post_continuous: "15:30"
