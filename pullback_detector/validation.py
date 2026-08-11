@@ -49,20 +49,26 @@ def validate_tick(tick: Tick, received_at: datetime, max_future_seconds: int = 5
 
 
 def normalize_live_tick_clock(tick: Tick, received_at: datetime, max_future_seconds: int = 5) -> tuple[Tick, float | None]:
-    """Normalize a clearly skewed Dhan source clock to receipt time during NSE cash hours.
+    """Normalize a clearly skewed Dhan source clock during NSE cash hours.
 
-    The original source timestamp remains available in the raw packet. This fallback
-    is deliberately restricted to the NSE cash session; outside market hours a future
-    source timestamp is not treated as a live market event.
+    Dhan documents LTT as Unix epoch seconds in the binary packet. A large positive
+    offset is therefore treated as a verified source-clock anomaly, not as a timezone
+    conversion. The raw source timestamp is copied to ``source_timestamp`` and the
+    receipt timestamp is used only for normalized live ordering/candle timing.
     """
     received_at = received_at.astimezone(timezone.utc)
     source = tick.timestamp.astimezone(timezone.utc)
     skew = (source - received_at).total_seconds()
     if skew <= max_future_seconds:
-        return tick, None
+        return replace(tick, source_timestamp=source, source_clock_skew_seconds=None), None
 
     local_time = received_at.astimezone(IST).time()
     if not (time(9, 15) <= local_time <= time(15, 30)):
-        return tick, None
+        return replace(tick, source_timestamp=source, source_clock_skew_seconds=None), None
 
-    return replace(tick, timestamp=received_at), skew
+    return replace(
+        tick,
+        timestamp=received_at,
+        source_timestamp=source,
+        source_clock_skew_seconds=skew,
+    ), skew
