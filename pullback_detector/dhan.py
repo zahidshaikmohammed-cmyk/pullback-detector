@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 
@@ -21,6 +21,7 @@ class DhanWebSocketClient:
         self.access_token = access_token
         self.ws_url = ws_url
         self.max_reconnects = max_reconnects
+        self.reconnects = 0
 
     def _url(self) -> str:
         if not self.client_id or not self.access_token:
@@ -38,17 +39,17 @@ class DhanWebSocketClient:
         })
 
     async def stream(self, subscriptions: list[dict], request_code: int = 17) -> AsyncIterator[tuple[bytes, Tick | None, datetime]]:
-        """Yield raw binary packet, normalized tick/control result, and receipt time."""
+        """Yield raw packet, normalized tick/control result, and receipt time."""
         if not subscriptions:
             raise ValueError("subscriptions cannot be empty")
-        reconnects = 0
+        attempts = 0
         while True:
             try:
                 async with websockets.connect(self._url(), ping_interval=20, ping_timeout=20) as socket:
                     for offset in range(0, len(subscriptions), 100):
                         await socket.send(self.subscription_message(subscriptions[offset:offset + 100], request_code))
                     logger.info("connected to Dhan v2 feed; subscriptions=%d", len(subscriptions))
-                    reconnects = 0
+                    attempts = 0
                     async for message in socket:
                         received_at = datetime.now(timezone.utc)
                         if not isinstance(message, bytes):
@@ -64,10 +65,11 @@ class DhanWebSocketClient:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                reconnects += 1
-                if reconnects > self.max_reconnects:
+                attempts += 1
+                self.reconnects += 1
+                if attempts > self.max_reconnects:
                     logger.exception("Dhan feed failed after %d reconnect attempts", self.max_reconnects)
                     raise
-                delay = min(30.0, 2 ** (reconnects - 1))
-                logger.warning("Dhan feed disconnected: %s; reconnect=%d in %.1fs", exc, reconnects, delay)
+                delay = min(30.0, 2 ** (attempts - 1))
+                logger.warning("Dhan feed disconnected: %s; reconnect=%d in %.1fs", exc, self.reconnects, delay)
                 await asyncio.sleep(delay)
