@@ -10,7 +10,7 @@ from .dhan_http import DhanMarketQuote
 from .health import ConnectivityHealth
 from .persistence import EventStore
 from .universe import InstrumentUniverse
-from .validation import PacketDeduplicator, validate_tick
+from .validation import PacketDeduplicator, normalize_live_tick_clock, validate_tick
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,19 @@ async def run_live(settings: Settings, duration_seconds: int = 600) -> dict:
         health.packets += 1
         if tick is None:
             continue
+
+        normalized_tick, source_skew = normalize_live_tick_clock(
+            tick, received_at, settings.max_future_seconds
+        )
+        if source_skew is not None:
+            logger.warning(
+                "Dhan source clock skew %.1fs for security_id=%s; using receipt timestamp %s for live candle timing",
+                source_skew,
+                tick.instrument_id,
+                received_at.isoformat(),
+            )
+            tick = normalized_tick
+
         try:
             validate_tick(tick, received_at, settings.max_future_seconds, settings.max_tick_age_seconds)
         except ValueError as exc:
