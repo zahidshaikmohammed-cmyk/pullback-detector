@@ -13,10 +13,7 @@ from .models import Tick
 
 HEADER = struct.Struct("<BhBi")
 TICKER = struct.Struct("<fi")
-QUOTE = struct.Struct("<fhiffiiff")
-# Header + 43 bytes of quote payload = 51 bytes total.
-QUOTE_PAYLOAD_SIZE = 43
-TICKER_PAYLOAD_SIZE = 8
+QUOTE = struct.Struct("<fhifiiiffff")
 
 RESPONSE_TICKER = 2
 RESPONSE_QUOTE = 4
@@ -47,37 +44,26 @@ def _price(value: float) -> Decimal:
 
 
 def parse_market_packet(payload: bytes) -> Tick | None:
-    """Decode ticker, quote, and full packets; return None for control packets."""
-    response_code, _, exchange_segment, security_id = _header(payload)
+    """Decode ticker/quote packets and ignore documented control packets."""
+    response_code, _, _exchange_segment, security_id = _header(payload)
 
     if response_code == RESPONSE_TICKER:
-        if len(payload) != HEADER.size + TICKER_PAYLOAD_SIZE:
+        if len(payload) != HEADER.size + TICKER.size:
             raise ValueError("Dhan ticker packet has invalid length")
         price, epoch = TICKER.unpack_from(payload, HEADER.size)
         return Tick(security_id, _timestamp(epoch), _price(price), 0, "NSE_EQ", None, response_code)
 
     if response_code == RESPONSE_QUOTE:
-        if len(payload) != HEADER.size + QUOTE_PAYLOAD_SIZE:
+        if len(payload) != HEADER.size + QUOTE.size:
             raise ValueError("Dhan quote packet has invalid length")
-        price, quantity, epoch, _atp, volume, _sell, _buy, _open, _close, _high, _low = struct.unpack_from(
-            "<fhiffiiff", payload, HEADER.size
+        price, quantity, epoch, _atp, volume, _sell, _buy, _open, _close, _high, _low = QUOTE.unpack_from(
+            payload, HEADER.size
         )
         if quantity < 0 or volume < 0:
             raise ValueError("Dhan quote packet contains negative quantity/volume")
-        return Tick(
-            security_id,
-            _timestamp(epoch),
-            _price(price),
-            int(quantity),
-            "NSE_EQ",
-            int(volume),
-            response_code,
-        )
+        return Tick(security_id, _timestamp(epoch), _price(price), int(quantity), "NSE_EQ", int(volume), response_code)
 
     if response_code == RESPONSE_FULL:
-        # Full packet is intentionally not consumed by the candle path yet.
-        # It remains a supported packet type at the transport boundary but
-        # requires a separate depth model before being normalized.
         if len(payload) < 63:
             raise ValueError("Dhan full packet is truncated")
         return None
