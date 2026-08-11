@@ -7,6 +7,7 @@ from dataclasses import replace
 from .models import Tick
 
 IST = ZoneInfo("Asia/Kolkata")
+VALID_MARKET_SEGMENTS = {"NSE_EQ", "IDX_I"}
 
 
 class PacketDeduplicator:
@@ -31,7 +32,7 @@ class PacketDeduplicator:
 def validate_tick(tick: Tick, received_at: datetime, max_future_seconds: int = 5, max_age_seconds: int = 300) -> None:
     if tick.instrument_id <= 0:
         raise ValueError("invalid security ID")
-    if tick.exchange_segment != "NSE_EQ":
+    if tick.exchange_segment not in VALID_MARKET_SEGMENTS:
         raise ValueError(f"unexpected exchange segment: {tick.exchange_segment}")
     if tick.price <= 0:
         raise ValueError("invalid non-positive price")
@@ -66,9 +67,4 @@ def normalize_live_tick_clock(tick: Tick, received_at: datetime, max_future_seco
     if not (time(9, 15) <= local_time <= time(15, 30)):
         return replace(tick, source_timestamp=source, source_clock_skew_seconds=None), None
 
-    return replace(
-        tick,
-        timestamp=received_at,
-        source_timestamp=source,
-        source_clock_skew_seconds=skew,
-    ), skew
+    return replace(tick, timestamp=received_at, source_timestamp=source, source_clock_skew_seconds=skew), skew
