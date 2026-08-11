@@ -20,7 +20,6 @@ class ConnectivityHealth:
     latencies_ms: list[float] = field(default_factory=list)
 
     def record_tick(self, tick: Tick, received_at: datetime) -> None:
-        self.packets += 1
         self.ticks += 1
         self.instruments_seen.add(tick.instrument_id)
         self.last_tick_by_instrument[tick.instrument_id] = tick.timestamp
