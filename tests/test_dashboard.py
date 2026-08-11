@@ -5,7 +5,7 @@ from pathlib import Path
 from pullback_detector.dashboard import DashboardData, HTML
 
 
-def test_dashboard_projects_universe_ticks_candles_and_v2_signals(tmp_path: Path):
+def test_dashboard_projects_universe_ticks_candles_and_v2_state(tmp_path: Path):
     root = tmp_path / "runtime"
     root.mkdir()
     (root / "universe.csv").write_text(
@@ -14,7 +14,7 @@ def test_dashboard_projects_universe_ticks_candles_and_v2_signals(tmp_path: Path
         encoding="utf-8",
     )
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    for name in ("normalized", "candles", "signals"):
+    for name in ("normalized", "candles"):
         (root / name).mkdir()
     now = datetime.now(timezone.utc)
     (root / "normalized" / f"{day}.jsonl").write_text(
@@ -39,36 +39,51 @@ def test_dashboard_projects_universe_ticks_candles_and_v2_signals(tmp_path: Path
         "timeframe_seconds": 300,
     }
     (root / "candles" / f"{day}.jsonl").write_text(json.dumps(candle) + "\n", encoding="utf-8")
-    signal = {
-        "instrument_id": 25,
-        "timestamp": now.isoformat(),
-        "direction": "LONG",
-        "impulse_start": "2980",
-        "impulse_end": "3020",
-        "retracement": 0.35,
-        "trigger_price": "3010",
-        "invalidation_level": "2990",
-        "confidence_score": 0.82,
-        "experimental_v1": False,
-        "health_score": 82,
-        "classification": "TRIGGER_CONFIRMED",
-    }
-    (root / "signals" / f"{day}.jsonl").write_text(json.dumps(signal) + "\n", encoding="utf-8")
 
     state = {"status": "live", "last_report": {"accepted_tick_count": 1}, "last_error": None}
     data = DashboardData(root, state).snapshot()
 
     assert data["health"]["service_status"] == "live"
     assert len(data["instruments"]) == 1
-    assert data["instruments"][0]["symbol"] == "RELIANCE"
-    assert data["instruments"][0]["latest_price"] == "3000.50"
-    assert data["instruments"][0]["candle_5m_history"][0]["close"] == "3000.50"
-    assert data["instruments"][0]["state"] == "WATCHING"
-    assert data["active_signals"][0]["direction"] == "LONG"
-    assert data["active_signals"][0]["classification"] == "TRIGGER_CONFIRMED"
+    instrument = data["instruments"][0]
+    assert instrument["symbol"] == "RELIANCE"
+    assert instrument["price"] == "3000.50"
+    assert instrument["candle_5m_history"][0]["close"] == "3000.50"
+    assert instrument["state"] == "SCANNING"
+    assert instrument["v2_state"] == "WATCHING"
+    assert instrument["price_source"] == "LIVE_TICK"
+    assert instrument["next_required_condition"] == "VALIDATED IMPULSE"
+
+
+def test_dashboard_uses_persisted_anatomy_when_live_state_is_empty(tmp_path: Path):
+    root = tmp_path / "runtime"
+    (root / "anatomy").mkdir(parents=True)
+    (root / "anatomy" / "25.json").write_text(
+        json.dumps({
+            "instrument_id": 25,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "current_price": "3010.25",
+            "state": "PULLBACK_DEVELOPING",
+            "impulse_direction": "LONG",
+            "health_score": 81,
+        }),
+        encoding="utf-8",
+    )
+    (root / "universe.csv").write_text(
+        "security_id,exchange_segment,symbol,trading_symbol\n25,NSE_EQ,RELIANCE,RELIANCE\n",
+        encoding="utf-8",
+    )
+
+    data = DashboardData(root, {"status": "live", "last_report": {}, "last_error": None}).snapshot()
+    instrument = data["instruments"][0]
+    assert instrument["state"] == "PULLBACK"
+    assert instrument["v2_state"] == "PULLBACK_DEVELOPING"
+    assert instrument["price_source"] == "LAST_KNOWN_STATE"
+    assert instrument["direction"] == "LONG"
 
 
 def test_dashboard_is_browser_html_not_json():
     assert "<!doctype html>" in HTML.lower()
-    assert "pullback detector" in HTML.lower()
+    assert "pullback monitor" in HTML.lower()
     assert "/api/dashboard" in HTML
+    assert "CLICK TO INSPECT ANATOMY" in HTML
