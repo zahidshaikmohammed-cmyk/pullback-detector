@@ -41,16 +41,11 @@ class EventStore:
 
     def raw_packet(self, received_at: datetime, payload: bytes, response_code: int | None = None) -> None:
         day = received_at.astimezone(timezone.utc).strftime("%Y-%m-%d")
-        self._append(self.root / "raw" / f"{day}.jsonl", {
-            "received_at": received_at,
-            "response_code": response_code,
-            "payload_hex": payload.hex(),
-        })
+        self._append(self.root / "raw" / f"{day}.jsonl", {"received_at": received_at, "response_code": response_code, "payload_hex": payload.hex()})
 
     def tick(self, received_at: datetime, tick: Tick) -> None:
         day = received_at.astimezone(timezone.utc).strftime("%Y-%m-%d")
-        record = asdict(tick)
-        record["received_at"] = received_at
+        record = asdict(tick); record["received_at"] = received_at
         self._append(self.root / "normalized" / f"{day}.jsonl", record)
 
     def candle(self, candle: Candle) -> None:
@@ -63,3 +58,22 @@ class EventStore:
 
     def health(self, report: dict) -> None:
         self._append(self.root / "health.jsonl", report)
+
+    def recent_candles(self, instrument_id: int, timeframe_seconds: int, limit: int = 2500) -> list[Candle]:
+        """Read only persisted completed candles for deterministic context hydration."""
+        path = self.root / "candles"
+        if not path.exists():
+            return []
+        found: list[Candle] = []
+        files = sorted(path.glob("*.jsonl"))[-10:]
+        for file in files:
+            try:
+                for line in file.read_text(encoding="utf-8").splitlines():
+                    try: r = json.loads(line)
+                    except json.JSONDecodeError: continue
+                    if int(r.get("instrument_id", -1)) != instrument_id or int(r.get("timeframe_seconds", 0)) != timeframe_seconds or not r.get("complete"): continue
+                    found.append(Candle(instrument_id, datetime.fromisoformat(r["start"]), datetime.fromisoformat(r["end"]), Decimal(r["open"]), Decimal(r["high"]), Decimal(r["low"]), Decimal(r["close"]), int(r["volume"]), True, timeframe_seconds))
+            except OSError:
+                continue
+        unique={c.start:c for c in found}
+        return [unique[k] for k in sorted(unique)[-limit:]]
