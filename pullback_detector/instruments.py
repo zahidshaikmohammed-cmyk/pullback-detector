@@ -1,14 +1,9 @@
+"""Compatibility wrapper around the Dhan-derived instrument universe."""
+
 import csv
-from dataclasses import dataclass
 from pathlib import Path
 
-
-@dataclass(frozen=True)
-class Instrument:
-    security_id: int
-    exchange_segment: str
-    symbol: str
-    security_type: str
+from .models import Instrument
 
 
 class InstrumentUniverse:
@@ -19,15 +14,19 @@ class InstrumentUniverse:
     def from_csv(cls, path: str | Path) -> "InstrumentUniverse":
         with Path(path).open(newline="", encoding="utf-8") as handle:
             reader = csv.DictReader(handle)
-            return cls([
-                Instrument(
+            rows = []
+            for row in reader:
+                rows.append(Instrument(
                     security_id=int(row["security_id"]),
                     exchange_segment=row["exchange_segment"],
                     symbol=row["symbol"],
-                    security_type=row["security_type"],
-                )
-                for row in reader
-            ])
+                    trading_symbol=row.get("trading_symbol", row["symbol"]),
+                    instrument_type=row.get("instrument_type", "EQUITY"),
+                    series=row.get("series", ""),
+                    isin=row.get("isin", ""),
+                    source=row.get("source", "dhan_scrip_master"),
+                ))
+            return cls(rows)
 
     def get(self, security_id: int) -> Instrument | None:
         return self._by_id.get(security_id)
