@@ -55,3 +55,19 @@ class PullbackSignal:
     confidence_score: float
     experimental_v1: bool = True
     reason: str = ""
+    signal_id: str | None = None
+    health_score: int | None = None
+    classification: str = ""
+    session: str = ""
+    impulse_range: Decimal | None = None
+    impulse_atr_multiple: float | None = None
+    impulse_efficiency: float | None = None
+    directional_candle_ratio: float | None = None
+    countertrend_excursion: float | None = None
+    pullback_duration_candles: int | None = None
+    pullback_speed: float | None = None
+    pullback_efficiency: float | None = None
+    volume_ratio: float | None = None
+    impulse_high: Decimal | None = None
+    impulse_low: Decimal | None = None
+    protected_level: Decimal | None = None
