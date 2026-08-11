@@ -1,4 +1,4 @@
-"""Render-compatible live service entrypoint."""
+"""Render-compatible live service entrypoint and browser dashboard."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .config import get_settings
+from .dashboard import DashboardData, HTML
 from .service import run_live
 
 
@@ -22,29 +23,50 @@ _STATE = {
     "last_report": None,
     "last_error": None,
 }
+_DASHBOARD_DATA: DashboardData | None = None
 
 
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self) -> None:  # noqa: N802
-        if self.path not in {"/", "/health", "/healthz"}:
-            self.send_response(404)
-            self.end_headers()
-            return
-        payload = json.dumps(_STATE, default=str).encode("utf-8")
-        self.send_response(200 if _STATE["status"] in {"starting", "live", "degraded"} else 503)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(payload)))
+class AppHandler(BaseHTTPRequestHandler):
+    def _send(self, status: int, content_type: str, body: bytes) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(payload)
+        self.wfile.write(body)
+
+    def do_GET(self) -> None:  # noqa: N802
+        path = self.path.split("?", 1)[0]
+        if path in {"/", "/dashboard"}:
+            self._send(200, "text/html; charset=utf-8", HTML.encode("utf-8"))
+            return
+        if path in {"/health", "/healthz"}:
+            payload = json.dumps(_STATE, default=str).encode("utf-8")
+            status = 200 if _STATE["status"] in {"starting", "live", "degraded"} else 503
+            self._send(status, "application/json", payload)
+            return
+        if path == "/api/dashboard":
+            if _DASHBOARD_DATA is None:
+                self._send(503, "application/json", b'{"error":"dashboard not initialized"}')
+                return
+            try:
+                payload = json.dumps(_DASHBOARD_DATA.snapshot(), default=str, separators=(",", ":")).encode("utf-8")
+                self._send(200, "application/json; charset=utf-8", payload)
+            except Exception as exc:
+                LOGGER.exception("dashboard snapshot failed")
+                payload = json.dumps({"error": str(exc)}).encode("utf-8")
+                self._send(500, "application/json; charset=utf-8", payload)
+            return
+        self._send(404, "text/plain; charset=utf-8", b"Not found")
 
     def log_message(self, format: str, *args) -> None:
         return
 
 
-def serve_health() -> None:
+def serve_http() -> None:
     port = int(os.environ.get("PORT", "10000"))
-    server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
-    LOGGER.info("health server listening on 0.0.0.0:%s", port)
+    server = ThreadingHTTPServer(("0.0.0.0", port), AppHandler)
+    LOGGER.info("web server listening on 0.0.0.0:%s", port)
     server.serve_forever()
 
 
@@ -72,12 +94,14 @@ async def service_loop() -> None:
 
 
 def main() -> None:
+    global _DASHBOARD_DATA
     settings = get_settings()
+    _DASHBOARD_DATA = DashboardData(settings.data_root, _STATE)
     logging.basicConfig(
         level=getattr(logging, settings.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    threading.Thread(target=serve_health, name="health-server", daemon=True).start()
+    threading.Thread(target=serve_http, name="http-server", daemon=True).start()
     try:
         asyncio.run(service_loop())
     except KeyboardInterrupt:
