@@ -1,8 +1,9 @@
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from pullback_detector.market_context import MarketContextEngine
+from pullback_detector.market_context import MarketContextEngine, benchmark_alignment
 from pullback_detector.models import Candle, Tick
+from pullback_detector.universe import InstrumentUniverse
 
 
 def bars(instrument=25, n=60, direction=1):
@@ -54,3 +55,31 @@ def test_session_phase_is_session_aware():
     assert e._session_phase(datetime(2026,8,10,3,50,tzinfo=timezone.utc)) == "OPENING"
     assert e._session_phase(datetime(2026,8,10,7,0,tzinfo=timezone.utc)) == "MIDDAY"
     assert e._session_phase(datetime(2026,8,10,10,0,tzinfo=timezone.utc)) == "CLOSING"
+
+
+def test_benchmark_resolution_uses_index_instruments_not_equities():
+    csv="""SEM_EXM_EXCH_ID,SEM_SEGMENT,SEM_SMST_SECURITY_ID,SEM_INSTRUMENT_NAME,SEM_TRADING_SYMBOL,SEM_CUSTOM_SYMBOL\nNSE,E,13,INDEX,NIFTY,NIFTY 50\nNSE,E,25,INDEX,BANKNIFTY,BANK NIFTY\nNSE,E,1333,EQUITY,RELIANCE,RELIANCE\n"""
+    benchmarks=InstrumentUniverse.from_dhan_csv_benchmarks(csv)
+    assert [(x.symbol,x.security_id,x.exchange_segment,x.instrument_type) for x in benchmarks] == [("BANKNIFTY",25,"IDX_I","INDEX"),("NIFTY",13,"IDX_I","INDEX")]
+
+
+def _context(direction):
+    return {f"{tf}_trend": direction for tf in ("day","h1","m15","m5","current")}
+
+
+def test_stock_market_alignment_requires_real_benchmark_evidence():
+    stock=_context("BULLISH")
+    assert benchmark_alignment(stock,{})["status"] == "INSUFFICIENT_DATA"
+    aligned=benchmark_alignment(stock,{"NIFTY":_context("BULLISH"),"BANKNIFTY":_context("BULLISH")})
+    assert aligned["status"] == "ALIGNED"
+    assert aligned["score"] == 100
+    diverged=benchmark_alignment(stock,{"NIFTY":_context("BEARISH"),"BANKNIFTY":_context("BEARISH")})
+    assert diverged["status"] == "DIVERGING"
+    assert diverged["score"] == 0
+
+
+def test_partial_benchmark_alignment_is_deterministic():
+    stock=_context("BULLISH")
+    result=benchmark_alignment(stock,{"NIFTY":_context("BULLISH"),"BANKNIFTY":_context("BEARISH")})
+    assert result["status"] == "PARTIALLY_ALIGNED"
+    assert result["score"] == 50
