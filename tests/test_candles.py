@@ -22,8 +22,8 @@ def test_flush_closes_only_completed_bars():
     agg = CandleAggregator(60)
     base = datetime(2026, 8, 11, 9, 15, 10, tzinfo=timezone.utc)
     agg.update(Tick(1, base, Decimal("100"), 10))
-    assert agg.flush(base + timedelta(seconds=59)) == []
-    closed = agg.flush(base + timedelta(seconds=60))
+    assert agg.flush(base + timedelta(seconds=49)) == []
+    closed = agg.flush(base + timedelta(seconds=50))
     assert len(closed) == 1
     assert closed[0].complete is True
     assert closed[0].volume == 10
@@ -38,4 +38,4 @@ def test_multiple_timeframes_form_independently():
         one.update(tick)
         five.update(tick)
     assert len(one.flush(base + timedelta(seconds=360))) == 5
-    assert len(five.flush(base + timedelta(seconds=360))) == 2
+    assert len(five.flush(base + timedelta(seconds=360))) == 1

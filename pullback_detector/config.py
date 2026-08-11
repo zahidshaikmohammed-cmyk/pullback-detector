@@ -26,11 +26,8 @@ class Settings(BaseSettings):
     min_live_instruments: int = 3
     live_duration_seconds: int = 600
 
-    # Pullback/alert settings remain unused by the Dhan connectivity layer.
-    pullback_lookback_bars: int = 20
-    pullback_min_retrace: float = 0.25
-    pullback_max_retrace: float = 0.618
-    pullback_min_trend_strength: float = 0.0
+    # Lifecycle risk/target settings. Detection thresholds live in
+    # config/pullback_rules.yaml and are owned by HealthyPullbackV2.
     pullback_target_1_multiple: Decimal = Decimal("1.0")
     pullback_target_2_multiple: Decimal = Decimal("2.0")
     pullback_cooldown_seconds: int = 300
