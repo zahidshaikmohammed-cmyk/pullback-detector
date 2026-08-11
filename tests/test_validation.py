@@ -4,7 +4,7 @@ from decimal import Decimal
 import pytest
 
 from pullback_detector.models import Tick
-from pullback_detector.validation import PacketDeduplicator, validate_tick
+from pullback_detector.validation import PacketDeduplicator, normalize_live_tick_clock, validate_tick
 
 
 def test_duplicate_raw_packet_is_detected():
@@ -28,3 +28,19 @@ def test_future_tick_rejected():
     tick = Tick(1, received + timedelta(seconds=20), Decimal("100"), 1)
     with pytest.raises(ValueError, match="future"):
         validate_tick(tick, received, max_future_seconds=5)
+
+
+def test_future_tick_is_normalized_during_nse_session():
+    received = datetime(2026, 8, 11, 5, 30, 0, tzinfo=timezone.utc)  # 11:00 IST
+    tick = Tick(1, received + timedelta(hours=4), Decimal("100"), 1)
+    normalized, skew = normalize_live_tick_clock(tick, received, max_future_seconds=5)
+    assert skew == 14400
+    assert normalized.timestamp == received
+
+
+def test_future_tick_is_not_normalized_outside_nse_session():
+    received = datetime(2026, 8, 11, 11, 52, 0, tzinfo=timezone.utc)  # 17:22 IST
+    tick = Tick(1, received + timedelta(hours=4), Decimal("100"), 1)
+    normalized, skew = normalize_live_tick_clock(tick, received, max_future_seconds=5)
+    assert skew is None
+    assert normalized.timestamp == tick.timestamp
