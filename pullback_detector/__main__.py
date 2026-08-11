@@ -62,6 +62,7 @@ async def service_loop() -> None:
             report = await run_live(settings)
             _STATE["last_report"] = report
             _STATE["last_error"] = None
+            _STATE["status"] = "live"
         except Exception as exc:
             _STATE["status"] = "degraded"
             _STATE["last_error"] = str(exc)
