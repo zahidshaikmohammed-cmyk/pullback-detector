@@ -14,6 +14,7 @@ from .models import Tick
 HEADER = struct.Struct("<BhBi")
 TICKER = struct.Struct("<fi")
 QUOTE = struct.Struct("<fhifiiiffff")
+EXCHANGE_SEGMENTS = {0: "IDX_I", 1: "NSE_EQ", 2: "NSE_FNO", 3: "NSE_CURRENCY", 4: "BSE_EQ", 5: "MCX_COMM", 7: "BSE_CURRENCY", 8: "BSE_FNO"}
 
 RESPONSE_TICKER = 2
 RESPONSE_QUOTE = 4
@@ -22,13 +23,15 @@ RESPONSE_FULL = 8
 RESPONSE_DISCONNECT = 50
 
 
-def _header(payload: bytes) -> tuple[int, int, int, int]:
+def _header(payload: bytes) -> tuple[int, int, str, int]:
     if len(payload) < HEADER.size:
         raise ValueError("Dhan packet shorter than 8-byte header")
     response_code, message_length, exchange_segment, security_id = HEADER.unpack_from(payload)
     if message_length != len(payload):
         raise ValueError(f"Dhan packet length mismatch: header={message_length}, actual={len(payload)}")
-    return response_code, message_length, exchange_segment, security_id
+    if exchange_segment not in EXCHANGE_SEGMENTS:
+        raise ValueError(f"Dhan packet contains unknown exchange segment: {exchange_segment}")
+    return response_code, message_length, EXCHANGE_SEGMENTS[exchange_segment], security_id
 
 
 def _timestamp(epoch: int) -> datetime:
@@ -45,13 +48,13 @@ def _price(value: float) -> Decimal:
 
 def parse_market_packet(payload: bytes) -> Tick | None:
     """Decode ticker/quote packets and ignore documented control packets."""
-    response_code, _, _exchange_segment, security_id = _header(payload)
+    response_code, _, exchange_segment, security_id = _header(payload)
 
     if response_code == RESPONSE_TICKER:
         if len(payload) != HEADER.size + TICKER.size:
             raise ValueError("Dhan ticker packet has invalid length")
         price, epoch = TICKER.unpack_from(payload, HEADER.size)
-        return Tick(security_id, _timestamp(epoch), _price(price), 0, "NSE_EQ", None, response_code)
+        return Tick(security_id, _timestamp(epoch), _price(price), 0, exchange_segment, None, response_code)
 
     if response_code == RESPONSE_QUOTE:
         if len(payload) != HEADER.size + QUOTE.size:
@@ -61,7 +64,7 @@ def parse_market_packet(payload: bytes) -> Tick | None:
         )
         if quantity < 0 or volume < 0:
             raise ValueError("Dhan quote packet contains negative quantity/volume")
-        return Tick(security_id, _timestamp(epoch), _price(price), int(quantity), "NSE_EQ", int(volume), response_code)
+        return Tick(security_id, _timestamp(epoch), _price(price), int(quantity), exchange_segment, int(volume), response_code)
 
     if response_code == RESPONSE_FULL:
         if len(payload) < 63:
