@@ -6,17 +6,68 @@ INSUFFICIENT_DATA; no values are invented.
 """
 from __future__ import annotations
 
-from dataclasses import asdict
 from datetime import datetime, time, timezone
 from decimal import Decimal
 from statistics import median
-from typing import Iterable
+from typing import Mapping
 from zoneinfo import ZoneInfo
 
 from .models import Candle, Tick
 
-
 DIRECTIONS = ("BULLISH", "BEARISH", "NEUTRAL", "INSUFFICIENT_DATA")
+CONTEXT_TIMEFRAMES = ("day", "h1", "m15", "m5", "current")
+
+
+def _base_direction(value: str | None) -> str:
+    value = str(value or "INSUFFICIENT_DATA")
+    if value.endswith("BULLISH"):
+        return "BULLISH"
+    if value.endswith("BEARISH"):
+        return "BEARISH"
+    return value
+
+
+def benchmark_alignment(stock: Mapping, benchmarks: Mapping[str, Mapping]) -> dict:
+    """Compare a stock against available NIFTY/BANKNIFTY context only.
+
+    The comparison uses the same Day/1H/15M/5M/Current direction outputs that
+    MarketContextEngine already calculates. It adds no indicators or V2
+    thresholds. Missing benchmark evidence remains INSUFFICIENT_DATA.
+    """
+    stock_direction = {tf: _base_direction(stock.get(f"{tf}_trend")) for tf in CONTEXT_TIMEFRAMES}
+    comparisons = []
+    benchmark_views = {}
+    for name in ("NIFTY", "BANKNIFTY"):
+        ctx = dict(benchmarks.get(name) or {})
+        benchmark_views[name] = ctx
+        for tf in CONTEXT_TIMEFRAMES:
+            bench_direction = _base_direction(ctx.get(f"{tf}_trend"))
+            if stock_direction[tf] in ("BULLISH", "BEARISH") and bench_direction in ("BULLISH", "BEARISH"):
+                comparisons.append(stock_direction[tf] == bench_direction)
+    if not comparisons:
+        return {
+            "status": "INSUFFICIENT_DATA",
+            "score": None,
+            "matching_timeframes": None,
+            "compared_timeframes": 0,
+            "nifty": benchmark_views["NIFTY"],
+            "banknifty": benchmark_views["BANKNIFTY"],
+        }
+    ratio = sum(comparisons) / len(comparisons)
+    if ratio == 1.0:
+        status = "ALIGNED"
+    elif ratio >= 0.5:
+        status = "PARTIALLY_ALIGNED"
+    else:
+        status = "DIVERGING"
+    return {
+        "status": status,
+        "score": int(round(ratio * 100)),
+        "matching_timeframes": sum(comparisons),
+        "compared_timeframes": len(comparisons),
+        "nifty": benchmark_views["NIFTY"],
+        "banknifty": benchmark_views["BANKNIFTY"],
+    }
 
 
 class MarketContextEngine:
@@ -156,11 +207,11 @@ class MarketContextEngine:
         return {"direction":label,"score":int(round(score)),"strength":int(round(score)),"momentum":mom,"structure":structure,"volatility":vol,"efficiency":eff,"protected_level":protected,"reference_level":reference,"ema20":e20,"ema50":e50,"atr":atr,"roc":roc,"atr_percentile":vol_pct}
 
     def _vwap(self, bars:list[Candle]) -> dict:
-        if not bars:return {"state":"INSUFFICIENT_DATA","distance_atr":None,"slope":None,"crosses":None,"time_above":None,"time_below":None}
+        if not bars:return {"state":"INSUFFICIENT_DATA","distance_atr":None,"slope":None,"crosses":None,"time_above":None,"time_below":None,"vwap":None}
         local_day=bars[-1].start.astimezone(self.tz).date(); day=[b for b in bars if b.start.astimezone(self.tz).date()==local_day]
-        if not day:return {"state":"INSUFFICIENT_DATA","distance_atr":None,"slope":None,"crosses":None,"time_above":None,"time_below":None}
+        if not day:return {"state":"INSUFFICIENT_DATA","distance_atr":None,"slope":None,"crosses":None,"time_above":None,"time_below":None,"vwap":None}
         den=sum(b.volume for b in day); vwap=float(sum(((b.high+b.low+b.close)/Decimal(3))*b.volume for b in day)/den) if den else None
-        if vwap is None:return {"state":"INSUFFICIENT_DATA","distance_atr":None,"slope":None,"crosses":None,"time_above":None,"time_below":None}
+        if vwap is None:return {"state":"INSUFFICIENT_DATA","distance_atr":None,"slope":None,"crosses":None,"time_above":None,"time_below":None,"vwap":None}
         atr=self._atr(bars); price=float(self.last_tick.price) if self.last_tick else float(day[-1].close)
         crosses=sum((float(a.close)-vwap)*(float(b.close)-vwap)<0 for a,b in zip(day[-10:-1],day[-9:]))
         above=sum(float(b.close)>=vwap for b in day); below=len(day)-above
@@ -168,7 +219,8 @@ class MarketContextEngine:
         state="ABOVE_ACCEPTANCE" if price>vwap and above>=max(3,int(.7*len(day))) and slope>=0 else "BELOW_ACCEPTANCE" if price<vwap and below>=max(3,int(.7*len(day))) and slope<=0 else "TRANSITIONING"
         return {"state":state,"price":price,"vwap":vwap,"distance_atr":(price-vwap)/atr if atr else None,"slope":slope,"crosses":crosses,"time_above":above,"time_below":below}
 
-    def _volume(self,bars:list[Candle])->dict:
+    @staticmethod
+    def _volume(bars:list[Candle])->dict:
         if len(bars)<10:return {"state":"INSUFFICIENT_DATA","relative_volume":None,"trend":"INSUFFICIENT_DATA"}
         vals=[b.volume for b in bars]; med=float(median(vals[-20:])); cur=float(vals[-1]); rv=cur/med if med else None
         state="VERY LOW" if rv is not None and rv<.5 else "LOW" if rv is not None and rv<.8 else "NORMAL" if rv is not None and rv<1.2 else "ELEVATED" if rv is not None and rv<1.5 else "HIGH" if rv is not None and rv<2 else "EXTREME"
@@ -199,7 +251,6 @@ class MarketContextEngine:
         alignment=f"{bulls}/{len(dirs)} BULLISH" if bulls>=bears else f"{bears}/{len(dirs)} BEARISH" if bears>bulls else "CONFLICTED"
         structure=trends["m5"].get("structure","INSUFFICIENT_DATA")
         primary=trends["current"]["direction"]
-        if primary=="INSUFFICIENT_DATA": primary="INSUFFICIENT_DATA"
         health=None
         evidence=[]; conflicts=[]
         if trends["m5"]["score"] is not None: evidence.append({"factor":"5M TREND","score":trends["m5"]["score"]})
@@ -209,9 +260,7 @@ class MarketContextEngine:
         if evidence:
             health=int(round(sum(x["score"] for x in evidence)/len(evidence)-sum(x["score"]*.15 for x in conflicts)/max(1,len(conflicts))))
         freshness="LIVE" if self.last_tick and (datetime.now(timezone.utc)-self.last_tick.timestamp).total_seconds()<300 else "STALE" if self.last_tick else "NO_LIVE_DATA"
-        self.last_context={
-            "instrument_id":self.instrument_id,"price":str(self.last_tick.price) if self.last_tick else None,"timestamp":now.isoformat(),"day_trend":trends["day"]["direction"],"day_score":trends["day"]["score"],"h1_trend":trends["h1"]["direction"],"h1_score":trends["h1"]["score"],"m15_trend":trends["m15"]["direction"],"m15_score":trends["m15"]["score"],"m5_trend":trends["m5"]["direction"],"m5_score":trends["m5"]["score"],"current_trend":primary,"current_score":trends["current"]["score"],"trend_strength":trends["current"]["strength"],"trend_stability":"CHOPPY" if chop.get("state")=="SEVERE CHOP" else "UNSTABLE" if chop.get("score",0)>=45 else "STABLE","momentum_state":trends["current"]["momentum"],"momentum_score":trends["current"]["score"],"volatility_state":trends["m5"]["volatility"],"volatility_percentile":trends["m5"]["atr_percentile"],"vwap_state":vwap.get("state"),"vwap_distance_atr":vwap.get("distance_atr"),"relative_volume":volume.get("relative_volume"),"volume_state":volume.get("state"),"efficiency":trends["m5"]["efficiency"],"chop_score":chop.get("score"),"structure_state":structure,"protected_level":trends["m5"].get("protected_level"),"structure_risk":None,"market_alignment":"INSUFFICIENT_DATA","relative_strength":None,"pullback_state":"NONE_DETECTED","health_score":health,"primary_reason":None,"next_required_condition":"NO_PULLBACK_DETECTED","data_freshness":freshness,"evidence":evidence,"conflicts":conflicts,"session_phase":self._session_phase(now),"session_open":None,"session_high":None,"session_low":None,"session_vwap":vwap.get("vwap"),"session_volume":sum(b.volume for b in (self.candles_1m or bars5) if b.start.astimezone(self.tz).date()==now.astimezone(self.tz).date()),"minutes_since_open":self._minutes_since_open(now),"minutes_to_close":self._minutes_to_close(now),"market_context_version":"1.0"
-        }
+        self.last_context={"instrument_id":self.instrument_id,"price":str(self.last_tick.price) if self.last_tick else None,"timestamp":now.isoformat(),"day_trend":trends["day"]["direction"],"day_score":trends["day"]["score"],"h1_trend":trends["h1"]["direction"],"h1_score":trends["h1"]["score"],"m15_trend":trends["m15"]["direction"],"m15_score":trends["m15"]["score"],"m5_trend":trends["m5"]["direction"],"m5_score":trends["m5"]["score"],"current_trend":primary,"current_score":trends["current"]["score"],"trend_strength":trends["current"]["strength"],"trend_stability":"CHOPPY" if chop.get("state")=="SEVERE CHOP" else "UNSTABLE" if chop.get("score",0)>=45 else "STABLE","momentum_state":trends["current"]["momentum"],"momentum_score":trends["current"]["score"],"volatility_state":trends["m5"]["volatility"],"volatility_percentile":trends["m5"]["atr_percentile"],"vwap_state":vwap.get("state"),"vwap_distance_atr":vwap.get("distance_atr"),"relative_volume":volume.get("relative_volume"),"volume_state":volume.get("state"),"efficiency":trends["m5"]["efficiency"],"chop_score":chop.get("score"),"structure_state":structure,"protected_level":trends["m5"].get("protected_level"),"structure_risk":None,"market_alignment":"INSUFFICIENT_DATA","relative_strength":None,"pullback_state":"NONE_DETECTED","health_score":health,"primary_reason":None,"next_required_condition":"NO_PULLBACK_DETECTED","data_freshness":freshness,"evidence":evidence,"conflicts":conflicts,"session_phase":self._session_phase(now),"session_open":None,"session_high":None,"session_low":None,"session_vwap":vwap.get("vwap"),"session_volume":sum(b.volume for b in (self.candles_1m or bars5) if b.start.astimezone(self.tz).date()==now.astimezone(self.tz).date()),"minutes_since_open":self._minutes_since_open(now),"minutes_to_close":self._minutes_to_close(now),"market_context_version":"1.0"}
 
     def _session_phase(self, ts:datetime)->str:
         t=ts.astimezone(self.tz).time()
