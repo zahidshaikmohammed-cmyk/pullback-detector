@@ -2,7 +2,7 @@
 from __future__ import annotations
 import csv,json,threading
 from dataclasses import asdict
-from datetime import datetime,timedelta,timezone
+from datetime import datetime,timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -65,4 +65,4 @@ class DashboardData:
                     if x.get("event")=="candidate_rejected":x["symbol"]=r.get("symbol") or sid;rej.append(x)
             p={"generated_at":now.isoformat(),"health":h,"instruments":ins,"active_setups":a,"recently_closed_setups":closed[:50],"rejections":sorted(rej,key=lambda x:x.get("timestamp",""),reverse=True)[:80],"active_signals":sigs[:25]}
             self.cache=(key,p);return p
-HTML="".join(p.read_text(encoding="utf-8") for p in (Path(__file__).with_name("dashboard_head1.html"),Path(__file__).with_name("dashboard_head2.html"),Path(__file__).with_name("dashboard_script1.html"),Path(__file__).with_name("dashboard_script2.html")))
+HTML="".join(p.read_text(encoding="utf-8") for p in (Path(__file__).with_name("dashboard_head1.html"),Path(__file__).with_name("dashboard_theme.html"),Path(__file__).with_name("dashboard_head2.html"),Path(__file__).with_name("dashboard_script1.html"),Path(__file__).with_name("dashboard_script2.html")))
