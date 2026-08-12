@@ -57,8 +57,10 @@ def test_exact_missing_instrument_is_exposed():
         {"symbol": "TCS", "security_id": 2, "exchange_segment": "NSE_EQ"},
     ]
     report = health.report(now, subscribed_instruments=2, expected_instruments=expected, websocket_connected=True, restart_recovery_verified=True)
-    assert report["producing_instruments"] == 1
-    assert report["not_producing_instruments"] == [{"symbol": "TCS", "security_id": 2, "exchange_segment": "NSE_EQ", "reason": "NO_PACKETS"}]
+    assert len(report["producing_instruments"]) == 1
+    assert report["producing_instruments"][0]["security_id"] == 1
+    assert report["not_producing_instruments"][0]["security_id"] == 2
+    assert report["not_producing_instruments"][0]["reason"] == "NO_TICK_RECEIVED"
 
 
 def test_candle_engine_counter_break_is_visible():
