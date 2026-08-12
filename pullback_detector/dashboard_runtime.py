@@ -7,17 +7,30 @@ from .dashboard import DashboardData
 from .live import LIVE_ANATOMY, LIVE_RUNTIME
 
 
+def _evidence_count(evidence: Any, timeframe: str):
+    if isinstance(evidence, dict):
+        item = evidence.get(timeframe)
+        if isinstance(item, dict):
+            return item.get("candle_count")
+    if isinstance(evidence, list):
+        for item in evidence:
+            if isinstance(item, dict) and str(item.get("timeframe", "")).lower() in {timeframe, timeframe.replace("_", "")}:
+                return item.get("candle_count")
+    return None
+
+
 def _context_direction(context: dict) -> dict:
+    evidence = context.get("evidence")
     return {
         "available": context.get("data_freshness") not in {None, "NO_DATA", "NO_LIVE_DATA", "CALCULATION_ERROR"},
-        "day": {"trend": context.get("day_trend"), "score": context.get("day_score"), "source_candle_count": context.get("evidence", {}).get("day", {}).get("candle_count")},
-        "one_hour": {"trend": context.get("h1_trend"), "score": context.get("h1_score"), "source_candle_count": context.get("evidence", {}).get("h1", {}).get("candle_count")},
-        "fifteen_minute": {"trend": context.get("m15_trend"), "score": context.get("m15_score"), "source_candle_count": context.get("evidence", {}).get("m15", {}).get("candle_count")},
-        "five_minute": {"trend": context.get("m5_trend"), "score": context.get("m5_score"), "source_candle_count": context.get("evidence", {}).get("m5", {}).get("candle_count")},
+        "day": {"trend": context.get("day_trend"), "score": context.get("day_score"), "source_candle_count": _evidence_count(evidence, "day")},
+        "one_hour": {"trend": context.get("h1_trend"), "score": context.get("h1_score"), "source_candle_count": _evidence_count(evidence, "h1")},
+        "fifteen_minute": {"trend": context.get("m15_trend"), "score": context.get("m15_score"), "source_candle_count": _evidence_count(evidence, "m15")},
+        "five_minute": {"trend": context.get("m5_trend"), "score": context.get("m5_score"), "source_candle_count": _evidence_count(evidence, "m5")},
         "current": {"trend": context.get("current_trend"), "score": context.get("current_score")},
         "trend_momentum": context.get("momentum_state"),
         "trend_stability": context.get("trend_stability"),
-        "calculation_status": context.get("context_error") and "ERROR" or "VALID",
+        "calculation_status": "ERROR" if context.get("context_error") else "VALID",
         "latest_candle_timestamp": context.get("timestamp"),
     }
 
@@ -116,7 +129,7 @@ def canonical_snapshot(data: DashboardData) -> dict[str, Any]:
             if context:
                 instrument["direction_context"] = _context_direction(context)
                 instrument["market_context"] = context
-                instrument["context_calculation_status"] = context.get("context_error") and "ERROR" or "VALID"
+                instrument["context_calculation_status"] = "ERROR" if context.get("context_error") else "VALID"
                 instrument["context_latest_timestamp"] = context.get("timestamp")
             else:
                 instrument["direction_context"] = {"available": False, "reason": "INSUFFICIENT_DATA"}
