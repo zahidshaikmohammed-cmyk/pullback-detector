@@ -95,6 +95,7 @@ def test_watchdog_state_is_machine_readable():
     state = client.status_snapshot()
 
     assert state["websocket_state"] == "CONNECTED_WAITING_FOR_PACKET"
+    assert state["connection_status"] == "CONNECTED"
     assert state["subscription_count"] == 22
-    assert state["data_flow_status"] == "WAITING_FOR_PACKET"
+    assert state["data_flow_status"] == "CONNECTED_NO_DATA"
     assert state["current_receive_duration_ms"] is not None
