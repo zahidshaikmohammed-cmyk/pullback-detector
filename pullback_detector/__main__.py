@@ -85,6 +85,15 @@ class AppHandler(BaseHTTPRequestHandler):
         if path in {"/feed-status", "/system-health"}:
             self._send(200, "application/json; charset=utf-8", _json({"service_status": _STATE["status"], "last_error": _STATE.get("last_error"), "health": self._health()}))
             return
+        if path == "/phase1-validation":
+            try:
+                from .phase1_validation import ACTIVE_VALIDATOR as validator
+                body = validator.diagnostic() if validator is not None else {"title": "PHASE 1 VALIDATION", "validation_state": "VALIDATION_IDLE", "blocking_condition": "VALIDATOR_NOT_RUNNING"}
+                self._send(200, "application/json; charset=utf-8", _json(body))
+            except Exception as exc:
+                LOGGER.exception("phase1 validation diagnostic failed")
+                self._send(500, "application/json; charset=utf-8", _json({"error": str(exc)}))
+            return
         if path == "/instruments":
             try:
                 self._send(200, "application/json; charset=utf-8", _json(self._snapshot().get("instruments", [])))
