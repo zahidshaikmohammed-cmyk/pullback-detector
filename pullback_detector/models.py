@@ -26,6 +26,11 @@ class Tick:
     feed_response_code: int = 2
     source_timestamp: datetime | None = None
     source_clock_skew_seconds: float | None = None
+    symbol: str | None = None
+    instrument_type: str | None = None
+    source: str = "DHAN"
+    validation_status: str = "VALIDATED"
+    sequence: int | None = None
 
 
 @dataclass(frozen=True)
@@ -40,6 +45,8 @@ class Candle:
     volume: int
     complete: bool = False
     timeframe_seconds: int = 300
+    tick_count: int = 0
+    source_event_count: int = 0
 
 
 @dataclass(frozen=True)
