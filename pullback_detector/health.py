@@ -57,29 +57,15 @@ class ConnectivityHealth:
 
     @staticmethod
     def _expected_sets(expected_instruments: list[dict], seen: set[int]) -> tuple[set[int], set[int], set[int]]:
-        expected_ids = {
-            int(item["security_id"])
-            for item in expected_instruments
-            if item.get("security_id") is not None
-        }
+        expected_ids = {int(item["security_id"]) for item in expected_instruments if item.get("security_id") is not None}
         producing_ids = expected_ids.intersection({int(i) for i in seen})
         not_producing_ids = expected_ids - producing_ids
         return expected_ids, producing_ids, not_producing_ids
 
-    def report(
-        self,
-        now: datetime | None = None,
-        subscribed_instruments: int = 0,
-        persisted_1m: int = 0,
-        persisted_5m: int = 0,
-        expected_instruments: list[dict] | None = None,
-        websocket_connected: bool = False,
-        restart_recovery_verified: bool = False,
-    ) -> dict:
+    def report(self, now: datetime | None = None, subscribed_instruments: int = 0, persisted_1m: int = 0, persisted_5m: int = 0, expected_instruments: list[dict] | None = None, websocket_connected: bool = False, restart_recovery_verified: bool = False) -> dict:
         now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         expected_instruments = expected_instruments or []
         expected_ids, producing_ids, missing_ids = self._expected_sets(expected_instruments, self.instruments_seen)
-
         receive_age = {str(k): max(0.0, (now - v).total_seconds()) for k, v in self.last_received_at_by_instrument.items()}
         normalized_age = {str(k): max(0.0, (now - v).total_seconds()) for k, v in self.last_tick_by_instrument.items()}
         latest = max(self.last_tick_by_instrument.values(), default=None)
@@ -102,10 +88,11 @@ class ConnectivityHealth:
             states[str(sid)] = "LIVE" if age is not None and age <= 60 else "STALE" if age is not None else "NO_DATA"
 
         missing_rows = []
+        producing_rows = []
         for item in expected_instruments:
             sid = int(item["security_id"])
+            age = normalized_age.get(str(sid))
             if sid in missing_ids:
-                age = normalized_age.get(str(sid))
                 reason = "STALE_FEED" if age is not None and age > 60 else "NO_TICK_RECEIVED"
                 missing_rows.append({
                     "symbol": item.get("symbol"),
@@ -116,12 +103,7 @@ class ConnectivityHealth:
                     "data_age": age,
                     "reason": reason,
                 })
-
-        producing_rows = []
-        for item in expected_instruments:
-            sid = int(item["security_id"])
-            if sid in producing_ids:
-                age = normalized_age.get(str(sid))
+            else:
                 producing_rows.append({
                     "symbol": item.get("symbol"),
                     "security_id": sid,
@@ -132,7 +114,6 @@ class ConnectivityHealth:
                     "reason": "LIVE_ACCEPTED_EVENT" if age is not None and age <= 60 else "STALE_FEED",
                 })
 
-        # EventStore is the canonical source for persistence/recovery counters.
         try:
             from .persistence import EventStore
             store = EventStore._last_instance
@@ -143,38 +124,14 @@ class ConnectivityHealth:
             persistence = store.persistence_snapshot()
             recovery = store.recovery_snapshot()
         else:
-            persistence = {
-                "persisted_1m_candles": persisted_1m,
-                "persisted_5m_candles": persisted_5m,
-                "last_persisted_1m_timestamp": None,
-                "last_persisted_5m_timestamp": None,
-                "persistence_write_count": 0,
-                "persistence_failure_count": self.persistence_errors,
-                "duplicate_event_count": 0,
-                "duplicate_signal_count": 0,
-            }
-            recovery = {
-                "restart_recovery_verified": restart_recovery_verified,
-                "pre_restart_counts": {"1m": 0, "5m": 0},
-                "post_restart_counts": {"1m": persisted_1m, "5m": persisted_5m},
-                "recovered_candle_counts": {"1m": 0, "5m": 0},
-                "recovered_event_state": {},
-                "duplicate_count": 0,
-                "continuity_status": "UNKNOWN",
-                "recovery_timestamp": None,
-                "recovery_duration_ms": None,
-            }
+            persistence = {"persisted_1m_candles": persisted_1m, "persisted_5m_candles": persisted_5m, "last_persisted_1m_timestamp": None, "last_persisted_5m_timestamp": None, "persistence_write_count": 0, "persistence_failure_count": self.persistence_errors, "duplicate_event_count": 0, "duplicate_signal_count": 0}
+            recovery = {"restart_recovery_verified": restart_recovery_verified, "pre_restart_counts": {"1m": 0, "5m": 0}, "post_restart_counts": {"1m": persisted_1m, "5m": persisted_5m}, "recovered_candle_counts": {"1m": 0, "5m": 0}, "recovered_event_state": {}, "duplicate_count": 0, "continuity_status": "UNKNOWN", "recovery_timestamp": None, "recovery_duration_ms": None}
 
         persisted_1m = int(persistence["persisted_1m_candles"])
         persisted_5m = int(persistence["persisted_5m_candles"])
         persistence_failures = int(persistence["persistence_failure_count"])
-
         raw_packet_count = self.packets + self.duplicate_packets
-        timestamp_integrity_verified = bool(
-            self.ticks > 0
-            and all(ts.tzinfo is not None for ts in self.last_tick_by_instrument.values())
-            and all(ts.tzinfo is not None for ts in self.last_source_timestamp_by_instrument.values())
-        )
+        timestamp_integrity_verified = bool(self.ticks > 0 and all(ts.tzinfo is not None for ts in self.last_tick_by_instrument.values()) and all(ts.tzinfo is not None for ts in self.last_source_timestamp_by_instrument.values()))
         subscriptions_verified = subscribed_instruments == len(expected_ids) == 22
         producing_set_verified = producing_ids.union(missing_ids) == expected_ids and producing_ids.isdisjoint(missing_ids)
         exact_non_producing_set_verified = missing_ids == expected_ids - producing_ids
@@ -185,22 +142,8 @@ class ConnectivityHealth:
         dashboard_snapshot_exception_free = True
         critical_integrity_error = bool(self.ticks_rejected_by_candle_engine or persistence_failures)
 
-        current_for_progression = {
-            "generated_at": now.isoformat(),
-            "accepted_tick_count": self.ticks,
-            "ticks_sent_to_candle_engine": self.ticks_sent_to_candle_engine,
-            "completed_1m_candles": self.candles_1m,
-            "completed_5m_candles": self.candles_5m,
-            "persisted_candle_count_1m": persisted_1m,
-            "persisted_candle_count_5m": persisted_5m,
-        }
-        progression = store.counter_progression(current_for_progression) if store is not None else {
-            "counter_progression_verified": False,
-            "before": {},
-            "after": current_for_progression,
-            "before_timestamp": None,
-            "after_timestamp": now.isoformat(),
-        }
+        current_for_progression = {"generated_at": now.isoformat(), "accepted_tick_count": self.ticks, "ticks_sent_to_candle_engine": self.ticks_sent_to_candle_engine, "completed_1m_candles": self.candles_1m, "completed_5m_candles": self.candles_5m, "persisted_candle_count_1m": persisted_1m, "persisted_candle_count_5m": persisted_5m}
+        progression = store.counter_progression(current_for_progression) if store is not None else {"counter_progression_verified": False, "before": {}, "after": current_for_progression, "before_timestamp": None, "after_timestamp": now.isoformat()}
 
         gates = {
             "feed_live": feed_state == "LIVE",
@@ -217,25 +160,11 @@ class ConnectivityHealth:
             "no_active_dashboard_snapshot_exception": dashboard_snapshot_exception_free,
             "no_unresolved_critical_data_integrity_error": not critical_integrity_error,
         }
-        ordered = [
-            "feed_live",
-            "subscriptions_verified",
-            "producing_set_verified",
-            "exact_non_producing_set_verified",
-            "timestamp_integrity_verified",
-            "1m_candle_generation_verified",
-            "5m_candle_generation_verified",
-            "persistence_verified",
-            "counter_progression_verified",
-            "restart_recovery_verified",
-            "canonical_dashboard_state_verified",
-            "no_active_dashboard_snapshot_exception",
-            "no_unresolved_critical_data_integrity_error",
-        ]
+        ordered = ["feed_live", "subscriptions_verified", "producing_set_verified", "exact_non_producing_set_verified", "timestamp_integrity_verified", "1m_candle_generation_verified", "5m_candle_generation_verified", "persistence_verified", "counter_progression_verified", "restart_recovery_verified", "canonical_dashboard_state_verified", "no_active_dashboard_snapshot_exception", "no_unresolved_critical_data_integrity_error"]
         first_failure = next((name for name in ordered if not gates[name]), None)
         overall = "READY_FOR_PHASE_2" if first_failure is None else "NOT_READY_FOR_PHASE_2"
 
-        return {
+        report = {
             "generated_at": now.isoformat(),
             "started_at": self.started_at.isoformat(),
             "service_status": "live",
@@ -296,6 +225,7 @@ class ConnectivityHealth:
             "restart_recovery": recovery,
             "counter_progression": progression,
             "counter_progression_verified": progression["counter_progression_verified"],
+            "cumulative_counter_values": progression["after"],
             "phase1_gates": gates,
             "overall_phase1_status": overall,
             "first_failure_reason": first_failure,
@@ -303,3 +233,4 @@ class ConnectivityHealth:
             "dashboard_snapshot_exception_free": dashboard_snapshot_exception_free,
             "market_status": "OPEN" if feed_state == "LIVE" else None,
         }
+        return report
