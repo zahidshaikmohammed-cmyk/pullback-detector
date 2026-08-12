@@ -26,6 +26,7 @@ class Tick:
     feed_response_code: int = 2
     source_timestamp: datetime | None = None
     source_clock_skew_seconds: float | None = None
+    timestamp_normalization_reason: str | None = None
     symbol: str | None = None
     instrument_type: str | None = None
     source: str = "DHAN"
