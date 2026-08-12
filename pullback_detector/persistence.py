@@ -69,8 +69,24 @@ class EventStore:
         return sha256(raw.encode("utf-8")).hexdigest()
 
     @staticmethod
+    def _event_key_from_row(row: dict) -> str | None:
+        try:
+            ts = datetime.fromisoformat(str(row["timestamp"])).astimezone(timezone.utc).isoformat()
+            raw = "|".join((str(row["instrument_id"]), ts, str(row["price"]), str(row.get("quantity", 0)), str(row.get("cumulative_volume")), str(row.get("sequence"))))
+            return sha256(raw.encode("utf-8")).hexdigest()
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    @staticmethod
     def _signal_key(signal: PullbackSignal) -> str:
         return str(signal.signal_id or "|".join((str(signal.instrument_id), signal.timestamp.astimezone(timezone.utc).isoformat(), signal.direction, str(signal.trigger_price))))
+
+    @staticmethod
+    def _signal_key_from_row(row: dict) -> str | None:
+        try:
+            return str(row.get("signal_id") or "|".join((str(row["instrument_id"]), datetime.fromisoformat(row["timestamp"]).astimezone(timezone.utc).isoformat(), row["direction"], str(row["trigger_price"]))))
+        except (KeyError, TypeError, ValueError):
+            return None
 
     @staticmethod
     def _candle_key(candle: Candle) -> tuple[int, int, str]:
@@ -109,9 +125,24 @@ class EventStore:
                     for line in file.read_text(encoding="utf-8").splitlines():
                         try:
                             row = json.loads(line)
-                            payload = json.dumps(row, sort_keys=True, separators=(",", ":"))
-                            self._event_keys.add(sha256(payload.encode("utf-8")).hexdigest())
-                        except (json.JSONDecodeError, TypeError):
+                            key = self._event_key_from_row(row)
+                            if key:
+                                self._event_keys.add(key)
+                        except json.JSONDecodeError:
+                            continue
+                except OSError:
+                    self.persistence_failure_count += 1
+
+        signals_path = self.root / "signals"
+        if signals_path.exists():
+            for file in sorted(signals_path.glob("*.jsonl"))[-120:]:
+                try:
+                    for line in file.read_text(encoding="utf-8").splitlines():
+                        try:
+                            key = self._signal_key_from_row(json.loads(line))
+                            if key:
+                                self._signal_keys.add(key)
+                        except json.JSONDecodeError:
                             continue
                 except OSError:
                     self.persistence_failure_count += 1
@@ -238,9 +269,10 @@ class EventStore:
     def counter_progression(self, current_health: dict) -> dict:
         previous = self._previous_health_report or {}
         keys = ("accepted_tick_count", "ticks_sent_to_candle_engine", "completed_1m_candles", "completed_5m_candles", "persisted_candle_count_1m", "persisted_candle_count_5m")
-        previous_cumulative = previous.get("cumulative_counter_values") or {k: 0 for k in keys}
+        previous_cumulative = previous.get("cumulative_counter_values") or {k: int(previous.get(k, 0) or 0) for k in keys}
         before = {k: int(previous_cumulative.get(k, 0) or 0) for k in keys}
-        after = {k: before[k] + int(current_health.get(k, 0) or 0) for k in keys}
+        current = {k: int(current_health.get(k, 0) or 0) for k in keys}
+        after = {k: before[k] + current[k] for k in keys}
         comparable = bool(previous)
         verified = comparable and all(after[k] >= before[k] for k in keys) and any(after[k] > before[k] for k in keys)
         return {"counter_progression_verified": verified, "before": before, "after": after, "before_timestamp": previous.get("generated_at"), "after_timestamp": current_health.get("generated_at")}
