@@ -29,6 +29,8 @@ LIVE_RUNTIME: dict = {
     "contexts": {},
     "benchmark_contexts": {},
     "detectors": {},
+    "one_min": None,
+    "five_min": None,
 }
 
 
@@ -184,6 +186,8 @@ async def run_live(settings: Settings, duration_seconds: int = 600) -> dict:
         "contexts": contexts,
         "benchmark_contexts": benchmark_contexts,
         "detectors": detectors,
+        "one_min": one_min,
+        "five_min": five_min,
     })
 
     persisted_1m = 0
