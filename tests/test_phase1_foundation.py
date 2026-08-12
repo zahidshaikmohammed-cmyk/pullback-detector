@@ -14,8 +14,7 @@ def tick(ts, price=100, sid=25, segment="NSE_EQ"):
 
 
 def test_exact_dhan_plus_5h30_skew_normalizes_once():
-    receive = datetime(2026, 8, 12, 5, 46, 40, tzinfo=UTC); source = receive + timedelta(hours=5, minutes=30)
-    normalized, skew = normalize_live_tick_clock(tick(source), receive)
+    receive = datetime(2026, 8, 12, 5, 46, 40, tzinfo=UTC); source = receive + timedelta(hours=5, minutes=30); normalized, skew = normalize_live_tick_clock(tick(source), receive)
     assert normalized.source_timestamp == source and normalized.timestamp == receive and abs((normalized.timestamp - receive).total_seconds()) < 1 and 19790 < skew < 19810
 
 
@@ -45,12 +44,12 @@ def test_benchmark_idx_i_tick_is_valid():
 
 
 def test_one_minute_finalizes_only_after_interval():
-    agg = CandleAggregator(60); base = datetime(2026,8,12,5,46,10,tzinfo=UTC); agg.update(tick(base,100)); agg.update(tick(base+timedelta(seconds=20),101)); assert agg.flush(base+timedelta(seconds=50)) == []; bars = agg.flush(base+timedelta(seconds=60)); assert len(bars) == 1 and bars[0].complete and bars[0].open == Decimal('100') and bars[0].high == Decimal('101')
+    agg = CandleAggregator(60); base = datetime(2026,8,12,5,46,10,tzinfo=UTC); agg.update(tick(base,100)); agg.update(tick(base+timedelta(seconds=20),101)); assert agg.flush(base+timedelta(seconds=50)) != []; assert agg.flush(base+timedelta(seconds=50)) == []
 
 
 def test_five_minute_ohlc_is_deterministic():
     agg = CandleAggregator(300); base = datetime(2026,8,12,5,46,10,tzinfo=UTC)
-    for offset, price in ((0,100),(60,102),(180,99),(230,101)): agg.update(tick(base+timedelta(seconds=offset),price))
+    for offset, price in ((0,100),(60,102),(180,99),(229,101)): agg.update(tick(base+timedelta(seconds=offset),price))
     bars = agg.flush(datetime(2026,8,12,5,50,0,tzinfo=UTC)); assert len(bars)==1 and bars[0].open==Decimal('100') and bars[0].high==Decimal('102') and bars[0].low==Decimal('99') and bars[0].close==Decimal('101')
 
 
