@@ -14,16 +14,31 @@ async def run_live(settings: Settings) -> dict:
     validator = Phase1Validator(settings.data_root)
     validator.start()
     task = asyncio.create_task(run_live_connectivity(settings, duration_seconds=settings.live_duration_seconds))
+    deadline = asyncio.get_running_loop().time() + settings.live_duration_seconds + 5
     try:
         while not task.done():
             await validator.poll()
-            await asyncio.sleep(2)
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                await validator.poll()
+                snapshot = validator._canonical_snapshot()
+                if snapshot is None:
+                    snapshot = {"validation_timeout": True, "validation_reason": validator.reason, "deployment_sha": validator.sha}
+                snapshot["validation_timeout"] = True
+                snapshot["validation_reason"] = validator.reason
+                return snapshot
+            await asyncio.sleep(min(2, remaining))
         try:
             report = await task
         except Exception as exc:
             await validator.fail(f"RUN_LIVE_EXCEPTION:{type(exc).__name__}:{exc}")
             raise
-        await validator.poll(force=True)
+        await validator.poll()
         return report
     finally:
         validator.stop()
