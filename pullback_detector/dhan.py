@@ -73,7 +73,12 @@ class DhanWebSocketClient:
         }
 
     async def stream(self, subscriptions: list[dict], request_code: int = 17) -> AsyncIterator[tuple[bytes, Tick | None, datetime]]:
-        """Yield decoded Dhan packets; never leave socket.recv blocked indefinitely."""
+        """Yield decoded Dhan packets; never leave socket.recv blocked indefinitely.
+
+        A receive timeout is surfaced as an empty heartbeat so callers regain control
+        while the existing reconnect path closes and restores the canonical subscription.
+        No synthetic market event is created: empty heartbeats are explicitly non-market data.
+        """
         if not subscriptions:
             raise ValueError("subscriptions cannot be empty")
         attempts = 0
@@ -95,12 +100,14 @@ class DhanWebSocketClient:
                         logger.info("WEBSOCKET_WAITING_FOR_PACKET timeout_seconds=%.1f", self.RECEIVE_TIMEOUT_SECONDS)
                         try:
                             message = await asyncio.wait_for(socket.recv(), timeout=self.RECEIVE_TIMEOUT_SECONDS)
-                        except asyncio.TimeoutError as exc:
+                        except asyncio.TimeoutError:
                             self.receive_timeout_count += 1
                             self.last_receive_error = "RECEIVE_TIMEOUT"
                             self.websocket_state = "RECEIVE_TIMEOUT"
                             logger.warning("WEBSOCKET_RECEIVE_TIMEOUT timeout_seconds=%.1f count=%d", self.RECEIVE_TIMEOUT_SECONDS, self.receive_timeout_count)
-                            raise exc
+                            timeout_at = datetime.now(timezone.utc)
+                            yield b"", None, timeout_at
+                            raise
                         finally:
                             self.current_receive_started_at = None
 
