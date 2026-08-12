@@ -30,7 +30,6 @@ class EventStore:
             os.chmod(self.root, 0o700)
         except OSError:
             pass
-
         self._candle_keys: set[tuple[int, int, str]] = set()
         self._event_keys: set[str] = set()
         self._signal_keys: set[str] = set()
@@ -66,16 +65,7 @@ class EventStore:
 
     @staticmethod
     def _event_key(tick: Tick) -> str:
-        raw = "|".join(
-            (
-                str(tick.instrument_id),
-                tick.timestamp.astimezone(timezone.utc).isoformat(),
-                str(tick.price),
-                str(tick.quantity),
-                str(tick.cumulative_volume),
-                str(tick.sequence),
-            )
-        )
+        raw = "|".join((str(tick.instrument_id), tick.timestamp.astimezone(timezone.utc).isoformat(), str(tick.price), str(tick.quantity), str(tick.cumulative_volume), str(tick.sequence)))
         return sha256(raw.encode("utf-8")).hexdigest()
 
     @staticmethod
@@ -99,11 +89,7 @@ class EventStore:
                         if not row.get("complete"):
                             continue
                         try:
-                            key = (
-                                int(row["instrument_id"]),
-                                int(row["timeframe_seconds"]),
-                                datetime.fromisoformat(row["start"]).astimezone(timezone.utc).isoformat(),
-                            )
+                            key = (int(row["instrument_id"]), int(row["timeframe_seconds"]), datetime.fromisoformat(row["start"]).astimezone(timezone.utc).isoformat())
                         except (KeyError, TypeError, ValueError):
                             continue
                         if key in self._candle_keys:
@@ -112,9 +98,7 @@ class EventStore:
                         timeframe = key[1]
                         if timeframe in self._persisted_counts:
                             self._persisted_counts[timeframe] += 1
-                            self._last_persisted_timestamp[timeframe] = max(
-                                self._last_persisted_timestamp[timeframe] or key[2], key[2]
-                            )
+                            self._last_persisted_timestamp[timeframe] = max(self._last_persisted_timestamp[timeframe] or key[2], key[2])
                 except OSError:
                     self.persistence_failure_count += 1
 
@@ -209,10 +193,7 @@ class EventStore:
         timeframe = candle.timeframe_seconds
         if timeframe in self._persisted_counts:
             self._persisted_counts[timeframe] += 1
-            self._last_persisted_timestamp[timeframe] = max(
-                self._last_persisted_timestamp[timeframe] or candle.start.astimezone(timezone.utc).isoformat(),
-                candle.start.astimezone(timezone.utc).isoformat(),
-            )
+            self._last_persisted_timestamp[timeframe] = max(self._last_persisted_timestamp[timeframe] or candle.start.astimezone(timezone.utc).isoformat(), candle.start.astimezone(timezone.utc).isoformat())
         if self._first_candle_after_start is None:
             self._first_candle_after_start = datetime.now(timezone.utc)
         day = candle.start.astimezone(timezone.utc).strftime("%Y-%m-%d")
@@ -236,18 +217,9 @@ class EventStore:
         self._write_recovery_checkpoint(report)
 
     def persistence_snapshot(self) -> dict:
-        return {
-            "persisted_1m_candles": self._persisted_counts[60],
-            "persisted_5m_candles": self._persisted_counts[300],
-            "last_persisted_1m_timestamp": self._last_persisted_timestamp[60],
-            "last_persisted_5m_timestamp": self._last_persisted_timestamp[300],
-            "persistence_write_count": self.persistence_write_count,
-            "persistence_failure_count": self.persistence_failure_count,
-            "duplicate_event_count": self.duplicate_event_count,
-            "duplicate_signal_count": self.duplicate_signal_count,
-        }
+        return {"persisted_1m_candles": self._persisted_counts[60], "persisted_5m_candles": self._persisted_counts[300], "last_persisted_1m_timestamp": self._last_persisted_timestamp[60], "last_persisted_5m_timestamp": self._last_persisted_timestamp[300], "persistence_write_count": self.persistence_write_count, "persistence_failure_count": self.persistence_failure_count, "duplicate_event_count": self.duplicate_event_count, "duplicate_signal_count": self.duplicate_signal_count}
 
-    def recovery_snapshot(self, current_health: dict | None = None) -> dict:
+    def recovery_snapshot(self) -> dict:
         previous = self._previous_checkpoint or {}
         pre_1m = int(previous.get("persisted_1m_candles", 0) or 0)
         pre_5m = int(previous.get("persisted_5m_candles", 0) or 0)
@@ -259,49 +231,21 @@ class EventStore:
         continued_events = self._first_tick_after_start is not None
         continued_candles = self._first_candle_after_start is not None
         verified = bool(recovered and history_restored and continuity and continued_events and continued_candles and self.persistence_failure_count == 0)
-        recovery_started = self._current_run_started_at
         recovery_time = self._first_candle_after_start or self._first_tick_after_start
-        duration_ms = None
-        if recovery_time is not None:
-            duration_ms = max(0.0, (recovery_time - recovery_started).total_seconds() * 1000.0)
-        return {
-            "restart_recovery_verified": verified,
-            "pre_restart_counts": {"1m": pre_1m, "5m": pre_5m},
-            "post_restart_counts": {"1m": post_1m, "5m": post_5m},
-            "recovered_candle_counts": {"1m": pre_1m, "5m": pre_5m},
-            "recovered_event_state": {
-                "history_restored": history_restored,
-                "ticks_resumed": continued_events,
-                "candles_resumed": continued_candles,
-                "duplicate_events": self.duplicate_event_count,
-                "duplicate_signals": self.duplicate_signal_count,
-            },
-            "duplicate_count": self.duplicate_event_count + self.duplicate_signal_count,
-            "continuity_status": "PASS" if continuity else "FAIL",
-            "recovery_timestamp": recovery_time.isoformat() if recovery_time else None,
-            "recovery_duration_ms": duration_ms,
-        }
+        duration_ms = max(0.0, (recovery_time - self._current_run_started_at).total_seconds() * 1000.0) if recovery_time else None
+        return {"restart_recovery_verified": verified, "pre_restart_counts": {"1m": pre_1m, "5m": pre_5m}, "post_restart_counts": {"1m": post_1m, "5m": post_5m}, "recovered_candle_counts": {"1m": pre_1m, "5m": pre_5m}, "recovered_event_state": {"history_restored": history_restored, "ticks_resumed": continued_events, "candles_resumed": continued_candles, "duplicate_events": self.duplicate_event_count, "duplicate_signals": self.duplicate_signal_count}, "duplicate_count": self.duplicate_event_count + self.duplicate_signal_count, "continuity_status": "PASS" if continuity else "FAIL", "recovery_timestamp": recovery_time.isoformat() if recovery_time else None, "recovery_duration_ms": duration_ms}
 
     def counter_progression(self, current_health: dict) -> dict:
         previous = self._previous_health_report or {}
         keys = ("accepted_tick_count", "ticks_sent_to_candle_engine", "completed_1m_candles", "completed_5m_candles", "persisted_candle_count_1m", "persisted_candle_count_5m")
-        before = {key: previous.get(key) for key in keys}
-        after = {key: current_health.get(key) for key in keys}
-        comparable = any(value is not None for value in before.values())
-        if not comparable:
-            verified = False
-        else:
-            verified = all((after[k] or 0) >= (before[k] or 0) for k in keys)
-        return {
-            "counter_progression_verified": verified,
-            "before": before,
-            "after": after,
-            "before_timestamp": previous.get("generated_at"),
-            "after_timestamp": current_health.get("generated_at"),
-        }
+        previous_cumulative = previous.get("cumulative_counter_values") or {k: 0 for k in keys}
+        before = {k: int(previous_cumulative.get(k, 0) or 0) for k in keys}
+        after = {k: before[k] + int(current_health.get(k, 0) or 0) for k in keys}
+        comparable = bool(previous)
+        verified = comparable and all(after[k] >= before[k] for k in keys) and any(after[k] > before[k] for k in keys)
+        return {"counter_progression_verified": verified, "before": before, "after": after, "before_timestamp": previous.get("generated_at"), "after_timestamp": current_health.get("generated_at")}
 
     def recent_candles(self, instrument_id: int, timeframe_seconds: int, limit: int = 2500) -> list[Candle]:
-        """Read persisted completed candles for deterministic context hydration."""
         path = self.root / "candles"
         if not path.exists():
             return []
@@ -316,18 +260,7 @@ class EventStore:
                         continue
                     if int(row.get("instrument_id", -1)) != instrument_id or int(row.get("timeframe_seconds", 0)) != timeframe_seconds or not row.get("complete"):
                         continue
-                    found.append(Candle(
-                        instrument_id,
-                        datetime.fromisoformat(row["start"]),
-                        datetime.fromisoformat(row["end"]),
-                        Decimal(row["open"]),
-                        Decimal(row["high"]),
-                        Decimal(row["low"]),
-                        Decimal(row["close"]),
-                        int(row["volume"]),
-                        True,
-                        timeframe_seconds,
-                    ))
+                    found.append(Candle(instrument_id, datetime.fromisoformat(row["start"]), datetime.fromisoformat(row["end"]), Decimal(row["open"]), Decimal(row["high"]), Decimal(row["low"]), Decimal(row["close"]), int(row["volume"]), True, timeframe_seconds))
             except OSError:
                 continue
         unique = {c.start: c for c in found}
