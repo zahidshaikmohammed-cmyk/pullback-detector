@@ -56,6 +56,8 @@ class DhanWebSocketClient:
         last_packet_age = None
         if self.last_packet_received_at is not None:
             last_packet_age = max(0.0, (now - self.last_packet_received_at).total_seconds())
+        connection_states = {"CONNECTED_WAITING_FOR_PACKET", "PACKET_RECEIVED", "RECEIVE_TIMEOUT"}
+        data_flow_live = last_packet_age is not None and last_packet_age <= 60
         return {
             "websocket_state": self.websocket_state,
             "connected_at": self.connected_at.isoformat() if self.connected_at else None,
@@ -69,16 +71,12 @@ class DhanWebSocketClient:
             "current_receive_duration_ms": round(waiting_seconds * 1000, 3) if waiting_seconds is not None else None,
             "seconds_since_last_packet": last_packet_age,
             "subscription_count": self._subscription_count,
-            "data_flow_status": "LIVE" if last_packet_age is not None and last_packet_age <= 60 else "WAITING_FOR_PACKET",
+            "connection_status": "CONNECTED" if self.websocket_state in connection_states else self.websocket_state,
+            "data_flow_status": "LIVE" if data_flow_live else "CONNECTED_NO_DATA" if self.websocket_state in connection_states else "DISCONNECTED",
         }
 
     async def stream(self, subscriptions: list[dict], request_code: int = 17) -> AsyncIterator[tuple[bytes, Tick | None, datetime]]:
-        """Yield decoded Dhan packets; never leave socket.recv blocked indefinitely.
-
-        A receive timeout is surfaced as an empty heartbeat so callers regain control
-        while the existing reconnect path closes and restores the canonical subscription.
-        No synthetic market event is created: empty heartbeats are explicitly non-market data.
-        """
+        """Yield decoded Dhan packets; never leave socket.recv blocked indefinitely."""
         if not subscriptions:
             raise ValueError("subscriptions cannot be empty")
         attempts = 0
@@ -147,4 +145,4 @@ class DhanWebSocketClient:
                     raise
                 delay = min(30.0, 2 ** (attempts - 1))
                 await asyncio.sleep(delay)
-                logger.info("WEBSOCKET_RECONNECTED attempt=%d subscriptions=%d", attempts, len(subscriptions))
+                logger.info("WEBSOCKET_RECONNECT_ATTEMPT attempt=%d subscriptions=%d", attempts, len(subscriptions))
