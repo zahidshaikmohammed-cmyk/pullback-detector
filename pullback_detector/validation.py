@@ -52,9 +52,24 @@ def validate_tick(tick: Tick, received_at: datetime, max_future_seconds: int = 5
 
 
 def normalize_live_tick_clock(tick: Tick, received_at: datetime, max_future_seconds: int = 5) -> tuple[Tick, float | None]:
-    received_at = received_at.astimezone(timezone.utc); source = tick.timestamp.astimezone(timezone.utc); skew = (source - received_at).total_seconds()
-    if skew <= max_future_seconds: return replace(tick, timestamp=source, source_timestamp=source, source_clock_skew_seconds=None, validation_status="NORMALIZED"), None
-    if abs(skew - Dhan_IST_EPOCH_SKEW_SECONDS) <= Dhan_IST_EPOCH_TOLERANCE_SECONDS:
-        corrected = source - timedelta(seconds=Dhan_IST_EPOCH_SKEW_SECONDS); corrected_skew = (corrected - received_at).total_seconds()
-        if corrected_skew <= max_future_seconds: return replace(tick, timestamp=corrected, source_timestamp=source, source_clock_skew_seconds=skew, validation_status="NORMALIZED_CLOCK_SKEW"), skew
-    return replace(tick, timestamp=source, source_timestamp=source, source_clock_skew_seconds=None, validation_status="UNNORMALIZED"), None
+    """Normalize Dhan LTT exactly once while preserving the raw source value.
+
+    Dhan documents LTT as epoch seconds. Production NSE_EQ evidence shows a
+    deterministic +05:30 local-epoch representation: the raw epoch decodes as
+    UTC, while subtracting 19,800 seconds yields the actual UTC market time.
+    We only apply that correction when the observed skew is within the narrow
+    documented IST offset tolerance AND the corrected timestamp is not future.
+    Otherwise the raw UTC interpretation remains unchanged and normal
+    validation can fail closed as FUTURE_TIMESTAMP or STALE_TIMESTAMP.
+    """
+    received_at = received_at.astimezone(timezone.utc)
+    source = tick.timestamp.astimezone(timezone.utc)
+    skew = (source - received_at).total_seconds()
+    raw = replace(tick, timestamp=source, source_timestamp=source, source_clock_skew_seconds=skew, timestamp_normalization_reason="RAW_EPOCH_UTC")
+    if skew <= max_future_seconds:
+        return replace(raw, source_clock_skew_seconds=None, timestamp_normalization_reason="RAW_EPOCH_UTC", validation_status="NORMALIZED"), None
+    corrected = source - timedelta(seconds=Dhan_IST_EPOCH_SKEW_SECONDS)
+    corrected_skew = (corrected - received_at).total_seconds()
+    if abs(skew - Dhan_IST_EPOCH_SKEW_SECONDS) <= Dhan_IST_EPOCH_TOLERANCE_SECONDS and corrected_skew <= max_future_seconds:
+        return replace(raw, timestamp=corrected, source_clock_skew_seconds=skew, timestamp_normalization_reason="DHAN_IST_EPOCH_PLUS_IST_OFFSET_CORRECTED", validation_status="NORMALIZED_CLOCK_SKEW"), skew
+    return replace(raw, timestamp=source, source_clock_skew_seconds=skew, timestamp_normalization_reason="UNRESOLVED_SOURCE_CLOCK_SKEW", validation_status="UNNORMALIZED"), None
