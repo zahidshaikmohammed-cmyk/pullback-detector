@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .dashboard import DashboardData
+from .dhan import DhanWebSocketClient
 from .live import LIVE_ANATOMY, LIVE_RUNTIME
 
 
@@ -55,6 +56,13 @@ def canonical_snapshot(data: DashboardData) -> dict[str, Any]:
             websocket_connected=bool(LIVE_RUNTIME.get("websocket_connected")),
             restart_recovery_verified=bool(LIVE_RUNTIME.get("restart_recovery_verified")),
         )
+        websocket = DhanWebSocketClient.ACTIVE_CLIENT
+        websocket_state = websocket.status_snapshot() if websocket is not None else {"websocket_state": "DISCONNECTED", "data_flow_status": "WAITING_FOR_PACKET"}
+        report["websocket_watchdog"] = websocket_state
+        report["connection_status"] = "CONNECTED" if websocket_state.get("websocket_state") in {"CONNECTED_WAITING_FOR_PACKET", "PACKET_RECEIVED"} else websocket_state.get("websocket_state", "DISCONNECTED")
+        report["data_flow_status"] = websocket_state.get("data_flow_status", "WAITING_FOR_PACKET")
+        report["feed_state"] = "LIVE" if report.get("accepted_tick_count", 0) > 0 and report.get("global_data_age_seconds") is not None and report["global_data_age_seconds"] <= 60 else "CONNECTED_NO_DATA" if report["connection_status"] == "CONNECTED" else "RECEIVE_TIMEOUT" if websocket_state.get("websocket_state") == "RECEIVE_TIMEOUT" else report.get("feed_state")
+        report["dhan_connection_status"] = "connected" if report["connection_status"] == "CONNECTED" else "reconnecting" if websocket_state.get("websocket_state") == "RECONNECTING" else "disconnected"
         report["raw_packet_count"] = runtime_health.packets + runtime_health.duplicate_packets
         report["decoded_packet_count"] = runtime_health.packets
         report["active_1m_buckets"] = one_state.get("open_bars", 0)
@@ -81,7 +89,8 @@ def canonical_snapshot(data: DashboardData) -> dict[str, Any]:
         report["pipeline_status"] = pipeline_status
         report["pipeline_first_failure"] = first_failure
         report["pipeline"] = {
-            "websocket": "CONNECTED" if LIVE_RUNTIME.get("websocket_connected") else "DISCONNECTED",
+            "websocket": report["connection_status"],
+            "data_flow": report["data_flow_status"],
             "subscriptions": f"{len(expected)} / 22",
             "producing": f"{len(runtime_health.instruments_seen)} / {len(expected)}",
             "raw_packets": report["raw_packet_count"],
@@ -99,6 +108,8 @@ def canonical_snapshot(data: DashboardData) -> dict[str, Any]:
             "status": pipeline_status,
             "first_failure": first_failure,
             "not_producing": report.get("not_producing_instruments", []),
+            "receive_timeout_count": websocket_state.get("receive_timeout_count", 0),
+            "seconds_since_last_packet": websocket_state.get("seconds_since_last_packet"),
         }
 
         base["health"] = report
