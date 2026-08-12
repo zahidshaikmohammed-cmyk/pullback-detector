@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from pullback_detector.candles import CandleAggregator
 from pullback_detector.dhan import DhanWebSocketClient
-from pullback_detector.dhan_protocol import parse_market_packet
+from pullback_detector.dhan_protocol import parse_market_packet, parse_market_packets
 from pullback_detector.health import ConnectivityHealth
 from pullback_detector.market_context import MarketContextEngine
 from pullback_detector.models import Tick
@@ -13,15 +13,11 @@ from pullback_detector.validation import normalize_live_tick_clock, validate_tic
 
 
 def test_exact_dhan_five_thirty_clock_skew_is_normalized_once():
-    received=datetime(2026,8,12,5,31,39,tzinfo=timezone.utc);source=received+timedelta(hours=5,minutes=30);tick=Tick(25,source,Decimal("25000"),1,"IDX_I")
-    normalized,skew=normalize_live_tick_clock(tick,received)
-    assert skew==19800 and normalized.source_timestamp==source and normalized.timestamp==received and normalized.timestamp.tzinfo==timezone.utc
-    assert validate_tick(normalized,received) is None
+    received=datetime(2026,8,12,5,31,39,tzinfo=timezone.utc);source=received+timedelta(hours=5,minutes=30);tick=Tick(25,source,Decimal("25000"),1,"IDX_I");normalized,skew=normalize_live_tick_clock(tick,received);assert skew==19800 and normalized.source_timestamp==source and normalized.timestamp==received and normalized.timestamp.tzinfo==timezone.utc;assert validate_tick(normalized,received) is None
 
 
 def test_other_future_clock_skew_is_quarantined_not_normalized():
-    received=datetime(2026,8,12,5,31,39,tzinfo=timezone.utc);source=received+timedelta(hours=2);tick=Tick(25,source,Decimal("25000"),1,"IDX_I");normalized,skew=normalize_live_tick_clock(tick,received)
-    assert skew is None
+    received=datetime(2026,8,12,5,31,39,tzinfo=timezone.utc);source=received+timedelta(hours=2);tick=Tick(25,source,Decimal("25000"),1,"IDX_I");normalized,skew=normalize_live_tick_clock(tick,received);assert skew is None
     try:validate_tick(normalized,received)
     except ValueError as exc:assert "future" in str(exc)
     else:raise AssertionError("unexpected future timestamp was accepted")
@@ -41,6 +37,10 @@ def test_one_bad_instrument_context_does_not_raise():
 
 def test_benchmark_idx_i_tick_decodes_from_dhan_binary_packet():
     payload=struct.pack("<BhBifi",2,16,0,25,25000.0,int(datetime(2026,8,12,5,31,39,tzinfo=timezone.utc).timestamp()));tick=parse_market_packet(payload);assert tick is not None and tick.exchange_segment=="IDX_I" and tick.instrument_id==25
+
+
+def test_concatenated_dhan_websocket_frame_is_split_into_packets():
+    epoch=int(datetime(2026,8,12,5,31,39,tzinfo=timezone.utc).timestamp());p1=struct.pack("<BhBifi",2,16,1,1594,1169.0,epoch);p2=struct.pack("<BhBifi",2,16,0,13,24298.0,epoch);ticks=parse_market_packets(p1+p2);assert len(ticks)==2;assert ticks[0].instrument_id==1594 and ticks[1].instrument_id==13
 
 
 def test_twenty_two_subscriptions_are_encoded_without_loss():
