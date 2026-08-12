@@ -1,5 +1,5 @@
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, time
 from hashlib import sha256
 from collections import deque
 
@@ -7,7 +7,8 @@ from .models import Tick
 
 VALID_MARKET_SEGMENTS = {"NSE_EQ", "IDX_I"}
 Dhan_IST_EPOCH_SKEW_SECONDS = 19800
-Dhan_IST_EPOCH_TOLERANCE_SECONDS = 90
+Dhan_NSE_LOCAL_EPOCH_START = time(9, 15)
+Dhan_NSE_LOCAL_EPOCH_END = time(16, 0)
 
 
 @dataclass(frozen=True)
@@ -51,16 +52,21 @@ def validate_tick(tick: Tick, received_at: datetime, max_future_seconds: int = 5
         raise ValueError(f"{result.reason_code}: {human}; actual={result.actual_value} threshold={result.threshold}")
 
 
+def _nse_local_epoch_candidate(source: datetime) -> datetime | None:
+    if source.time() < Dhan_NSE_LOCAL_EPOCH_START or source.time() >= Dhan_NSE_LOCAL_EPOCH_END:
+        return None
+    return source - timedelta(seconds=Dhan_IST_EPOCH_SKEW_SECONDS)
+
+
 def normalize_live_tick_clock(tick: Tick, received_at: datetime, max_future_seconds: int = 5) -> tuple[Tick, float | None]:
     """Normalize Dhan LTT exactly once while preserving the raw source value.
 
-    Dhan documents LTT as epoch seconds. Production NSE_EQ evidence shows a
-    deterministic +05:30 local-epoch representation: the raw epoch decodes as
-    UTC, while subtracting 19,800 seconds yields the actual UTC market time.
-    We only apply that correction when the observed skew is within the narrow
-    documented IST offset tolerance AND the corrected timestamp is not future.
+    Dhan documents LTT as epoch seconds. Production NSE_EQ evidence shows the
+    decoded epoch can carry the NSE local wall-clock as the epoch fields. A
+    correction is allowed only for NSE_EQ and only when those raw wall-clock
+    fields fall inside the deterministic NSE continuous/closing window.
     Otherwise the raw UTC interpretation remains unchanged and normal
-    validation can fail closed as FUTURE_TIMESTAMP or STALE_TIMESTAMP.
+    validation fails closed as FUTURE_TIMESTAMP or STALE_TIMESTAMP.
     """
     received_at = received_at.astimezone(timezone.utc)
     source = tick.timestamp.astimezone(timezone.utc)
@@ -68,8 +74,7 @@ def normalize_live_tick_clock(tick: Tick, received_at: datetime, max_future_seco
     raw = replace(tick, timestamp=source, source_timestamp=source, source_clock_skew_seconds=skew, timestamp_normalization_reason="RAW_EPOCH_UTC")
     if skew <= max_future_seconds:
         return replace(raw, source_clock_skew_seconds=None, timestamp_normalization_reason="RAW_EPOCH_UTC", validation_status="NORMALIZED"), None
-    corrected = source - timedelta(seconds=Dhan_IST_EPOCH_SKEW_SECONDS)
-    corrected_skew = (corrected - received_at).total_seconds()
-    if abs(skew - Dhan_IST_EPOCH_SKEW_SECONDS) <= Dhan_IST_EPOCH_TOLERANCE_SECONDS and corrected_skew <= max_future_seconds:
-        return replace(raw, timestamp=corrected, source_clock_skew_seconds=skew, timestamp_normalization_reason="DHAN_IST_EPOCH_PLUS_IST_OFFSET_CORRECTED", validation_status="NORMALIZED_CLOCK_SKEW"), skew
-    return replace(raw, timestamp=source, source_clock_skew_seconds=skew, timestamp_normalization_reason="UNRESOLVED_SOURCE_CLOCK_SKEW", validation_status="UNNORMALIZED"), None
+    candidate = _nse_local_epoch_candidate(source) if tick.exchange_segment == "NSE_EQ" else None
+    if candidate is not None:
+        return replace(raw, timestamp=candidate, source_clock_skew_seconds=skew, timestamp_normalization_reason="DHAN_NSE_LOCAL_EPOCH_PLUS_IST_OFFSET_CORRECTED", validation_status="NORMALIZED_CLOCK_SKEW"), skew
+    return replace(raw, source_timestamp=source, source_clock_skew_seconds=skew, timestamp_normalization_reason="UNRESOLVED_SOURCE_CLOCK_SKEW", validation_status="UNNORMALIZED"), None
