@@ -31,10 +31,8 @@ class PacketDeduplicator:
 
 def validate_tick_detailed(tick: Tick, received_at: datetime, max_future_seconds: int = 5, max_age_seconds: int = 300) -> ValidationResult:
     try:
-        received_at = received_at.astimezone(timezone.utc)
-        timestamp = tick.timestamp.astimezone(timezone.utc)
-    except (AttributeError, ValueError):
-        return ValidationResult(False, "INVALID_TIMESTAMP")
+        received_at = received_at.astimezone(timezone.utc); timestamp = tick.timestamp.astimezone(timezone.utc)
+    except (AttributeError, ValueError): return ValidationResult(False, "INVALID_TIMESTAMP")
     if tick.instrument_id <= 0: return ValidationResult(False, "UNKNOWN_INSTRUMENT", str(tick.instrument_id), ">0")
     if tick.exchange_segment not in VALID_MARKET_SEGMENTS: return ValidationResult(False, "INVALID_SEGMENT", tick.exchange_segment, "NSE_EQ|IDX_I")
     if tick.price.is_nan() or tick.price.is_infinite() or tick.price <= 0: return ValidationResult(False, "INVALID_PRICE", str(tick.price), ">0 finite")
@@ -48,23 +46,15 @@ def validate_tick_detailed(tick: Tick, received_at: datetime, max_future_seconds
 
 def validate_tick(tick: Tick, received_at: datetime, max_future_seconds: int = 5, max_age_seconds: int = 300) -> None:
     result = validate_tick_detailed(tick, received_at, max_future_seconds, max_age_seconds)
-    if not result.valid: raise ValueError(f"{result.reason_code}: actual={result.actual_value} threshold={result.threshold}")
+    if not result.valid:
+        human = {"FUTURE_TIMESTAMP": "future timestamp", "STALE_TIMESTAMP": "stale timestamp", "INVALID_PRICE": "invalid price", "INVALID_VOLUME": "invalid volume", "INVALID_SEGMENT": "unexpected exchange segment", "UNKNOWN_INSTRUMENT": "unknown instrument", "INVALID_TIMESTAMP": "invalid timestamp"}.get(result.reason_code or "", result.reason_code or "validation failure")
+        raise ValueError(f"{result.reason_code}: {human}; actual={result.actual_value} threshold={result.threshold}")
 
 
 def normalize_live_tick_clock(tick: Tick, received_at: datetime, max_future_seconds: int = 5) -> tuple[Tick, float | None]:
-    """Apply the one empirically established Dhan +05:30 epoch correction, once.
-
-    Raw source time is preserved in source_timestamp. normalized timestamp is UTC.
-    Any other future timestamp remains untouched and is quarantined by validation.
-    """
-    received_at = received_at.astimezone(timezone.utc)
-    source = tick.timestamp.astimezone(timezone.utc)
-    skew = (source - received_at).total_seconds()
-    if skew <= max_future_seconds:
-        return replace(tick, timestamp=source, source_timestamp=source, source_clock_skew_seconds=None, validation_status="NORMALIZED"), None
+    received_at = received_at.astimezone(timezone.utc); source = tick.timestamp.astimezone(timezone.utc); skew = (source - received_at).total_seconds()
+    if skew <= max_future_seconds: return replace(tick, timestamp=source, source_timestamp=source, source_clock_skew_seconds=None, validation_status="NORMALIZED"), None
     if abs(skew - Dhan_IST_EPOCH_SKEW_SECONDS) <= Dhan_IST_EPOCH_TOLERANCE_SECONDS:
-        corrected = source - timedelta(seconds=Dhan_IST_EPOCH_SKEW_SECONDS)
-        corrected_skew = (corrected - received_at).total_seconds()
-        if corrected_skew <= max_future_seconds:
-            return replace(tick, timestamp=corrected, source_timestamp=source, source_clock_skew_seconds=skew, validation_status="NORMALIZED_CLOCK_SKEW"), skew
+        corrected = source - timedelta(seconds=Dhan_IST_EPOCH_SKEW_SECONDS); corrected_skew = (corrected - received_at).total_seconds()
+        if corrected_skew <= max_future_seconds: return replace(tick, timestamp=corrected, source_timestamp=source, source_clock_skew_seconds=skew, validation_status="NORMALIZED_CLOCK_SKEW"), skew
     return replace(tick, timestamp=source, source_timestamp=source, source_clock_skew_seconds=None, validation_status="UNNORMALIZED"), None
