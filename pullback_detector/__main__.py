@@ -21,6 +21,33 @@ LOGGER = logging.getLogger(__name__)
 _STATE = {"status": "starting", "started_at": datetime.now(timezone.utc).isoformat(), "last_report": None, "last_error": None}
 _DASHBOARD_DATA: DashboardData | None = None
 
+PIPELINE_SCRIPT = r"""
+<script>
+(function(){
+  function ensurePanel(){
+    var root=document.getElementById('system-health');
+    if(!root || document.getElementById('phase1-pipeline')) return;
+    var panel=document.createElement('div'); panel.id='phase1-pipeline'; panel.className='section';
+    panel.innerHTML='<div class="sh"><h2>DATA PIPELINE</h2><span>Canonical Phase-1 runtime telemetry</span><div class="rule"></div></div><div class="telemetry" id="phase1-pipeline-grid"></div><div id="phase1-pipeline-status" class="empty" style="margin-top:7px"></div>';
+    root.appendChild(panel);
+  }
+  function fmt(v){return (v===null||v===undefined)?'—':String(v)}
+  async function refresh(){
+    try{
+      var r=await fetch('/api/dashboard?runtime='+Date.now(),{cache:'no-store'}); var d=await r.json(); var h=d.health||{}, p=h.pipeline||{};
+      ensurePanel(); var grid=document.getElementById('phase1-pipeline-grid'), status=document.getElementById('phase1-pipeline-status'); if(!grid||!status)return;
+      var cells=[['WebSocket',fmt(p.websocket)],['Subscriptions',fmt(p.subscriptions)],['Producing',fmt(p.producing)],['Raw packets',fmt(p.raw_packets)],['Decoded',fmt(p.decoded_packets)],['Accepted ticks',fmt(p.accepted_ticks)],['To candle engine',fmt(p.to_candle_engine)],['Rejected ticks',fmt(p.rejected_ticks)],['Active 1M',fmt(p.active_1m_buckets)],['Completed 1M',fmt(p.completed_1m_candles)],['Active 5M',fmt(p.active_5m_buckets)],['Completed 5M',fmt(p.completed_5m_candles)],['Persisted 1M',fmt(p.persisted_1m_candles)],['Persisted 5M',fmt(p.persisted_5m_candles)],['Global feed',fmt(h.feed_state)],['Data age',h.global_data_age_seconds==null?'—':Math.round(h.global_data_age_seconds)+'s']];
+      grid.innerHTML=cells.map(function(c){return '<div class="metric"><label>'+c[0]+'</label><b>'+c[1]+'</b></div>';}).join('');
+      var st=p.status||'BLOCKED'; var reason=p.first_failure||'None'; status.textContent='PIPELINE STATUS: '+st+' · FIRST FAILURE: '+reason;
+      status.className='empty '+(st==='PASS'?'live':'bad');
+    }catch(e){}
+  }
+  document.addEventListener('DOMContentLoaded',function(){ensurePanel();refresh();setInterval(refresh,3000);});
+})();
+</script>
+"""
+DASHBOARD_HTML = HTML.replace("</body>", PIPELINE_SCRIPT + "</body>")
+
 
 def _json(body):
     return json.dumps(body, default=str, separators=(",", ":")).encode("utf-8")
@@ -48,12 +75,11 @@ class AppHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?", 1)[0]
         if path in {"/", "/dashboard"}:
-            self._send(200, "text/html; charset=utf-8", HTML.encode("utf-8"))
+            self._send(200, "text/html; charset=utf-8", DASHBOARD_HTML.encode("utf-8"))
             return
         if path in {"/health", "/healthz"}:
             health = self._health()
-            status = health.get("feed_state")
-            http_status = 200 if status in {"LIVE", "STALE", "NO_DATA"} else 503
+            http_status = 200 if health.get("feed_state") in {"LIVE", "STALE", "NO_DATA"} else 503
             self._send(http_status, "application/json", _json({"service_status": _STATE["status"], "last_error": _STATE.get("last_error"), "health": health}))
             return
         if path in {"/feed-status", "/system-health"}:
