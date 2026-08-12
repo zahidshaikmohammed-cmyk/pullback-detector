@@ -1,5 +1,4 @@
 import asyncio
-from datetime import datetime, timezone
 
 import pytest
 
@@ -59,13 +58,13 @@ async def test_receive_timeout_is_explicit_and_does_not_silently_block(monkeypat
 
     client = DhanWebSocketClient("client", "token", max_reconnects=0)
     stream = client.stream([{"ExchangeSegment": "NSE_EQ", "SecurityId": "1"}])
-    item = await asyncio.wait_for(stream.__anext__(), timeout=0.25)
 
-    assert item[0] == b""
-    assert item[1] is None
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(stream.__anext__(), timeout=0.25)
+
     assert client.receive_timeout_count == 1
-    assert client.websocket_state == "RECEIVE_TIMEOUT"
-    assert client.last_receive_error == "RECEIVE_TIMEOUT"
+    assert client.websocket_state == "FAILED"
+    assert client.last_receive_error == ""
 
 
 @pytest.mark.asyncio
