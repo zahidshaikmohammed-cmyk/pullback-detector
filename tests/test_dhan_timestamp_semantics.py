@@ -34,20 +34,21 @@ def test_plus_530_local_epoch_is_corrected_once():
     normalized, skew = normalize_live_tick_clock(tick(raw_local_epoch), receive)
     assert normalized.timestamp == actual_utc
     assert normalized.source_timestamp == raw_local_epoch
-    assert normalized.timestamp_normalization_reason == "DHAN_IST_EPOCH_PLUS_IST_OFFSET_CORRECTED"
+    assert normalized.timestamp_normalization_reason == "DHAN_NSE_LOCAL_EPOCH_PLUS_IST_OFFSET_CORRECTED"
     assert skew == 19800
     assert validate_tick_detailed(normalized, receive).valid
 
 
-def test_post_session_local_epoch_is_not_accepted_as_live():
+def test_post_session_local_epoch_is_classified_as_stale_not_future():
     receive = datetime(2026, 8, 12, 12, 8, 9, tzinfo=timezone.utc)
     source_local_epoch = datetime(2026, 8, 12, 15, 59, 42, tzinfo=timezone.utc)
     normalized, _ = normalize_live_tick_clock(tick(source_local_epoch), receive)
     result = validate_tick_detailed(normalized, receive, max_age_seconds=300)
-    assert normalized.timestamp == source_local_epoch
-    assert normalized.timestamp_normalization_reason == "UNRESOLVED_SOURCE_CLOCK_SKEW"
+    assert normalized.source_timestamp == source_local_epoch
+    assert normalized.timestamp == datetime(2026, 8, 12, 10, 29, 42, tzinfo=timezone.utc)
+    assert normalized.timestamp_normalization_reason == "DHAN_NSE_LOCAL_EPOCH_PLUS_IST_OFFSET_CORRECTED"
     assert not result.valid
-    assert result.reason_code == "FUTURE_TIMESTAMP"
+    assert result.reason_code == "STALE_TIMESTAMP"
 
 
 def test_genuinely_future_timestamp_is_rejected_fail_closed():
