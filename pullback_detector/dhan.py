@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 class DhanWebSocketClient:
     """DhanHQ v2 live-feed adapter with bounded receive and reconnect control."""
 
+    ACTIVE_CLIENT = None
     RECEIVE_TIMEOUT_SECONDS = 15.0
 
     def __init__(self, client_id: str, access_token: str, ws_url: str = "wss://api-feed.dhan.co", max_reconnects: int = 5):
@@ -34,6 +35,7 @@ class DhanWebSocketClient:
         self.last_receive_error: str | None = None
         self.current_receive_started_at: datetime | None = None
         self._subscription_count = 0
+        DhanWebSocketClient.ACTIVE_CLIENT = self
 
     def _url(self) -> str:
         if not self.client_id or not self.access_token:
@@ -51,6 +53,9 @@ class DhanWebSocketClient:
         waiting_seconds = None
         if self.current_receive_started_at is not None:
             waiting_seconds = max(0.0, (now - self.current_receive_started_at).total_seconds())
+        last_packet_age = None
+        if self.last_packet_received_at is not None:
+            last_packet_age = max(0.0, (now - self.last_packet_received_at).total_seconds())
         return {
             "websocket_state": self.websocket_state,
             "connected_at": self.connected_at.isoformat() if self.connected_at else None,
@@ -62,8 +67,9 @@ class DhanWebSocketClient:
             "reconnect_count": self.reconnects,
             "last_receive_error": self.last_receive_error,
             "current_receive_duration_ms": round(waiting_seconds * 1000, 3) if waiting_seconds is not None else None,
+            "seconds_since_last_packet": last_packet_age,
             "subscription_count": self._subscription_count,
-            "data_flow_status": "LIVE" if self.last_packet_received_at and (now - self.last_packet_received_at).total_seconds() <= 60 else "WAITING_FOR_PACKET",
+            "data_flow_status": "LIVE" if last_packet_age is not None and last_packet_age <= 60 else "WAITING_FOR_PACKET",
         }
 
     async def stream(self, subscriptions: list[dict], request_code: int = 17) -> AsyncIterator[tuple[bytes, Tick | None, datetime]]:
@@ -86,7 +92,7 @@ class DhanWebSocketClient:
                     while True:
                         self.websocket_state = "CONNECTED_WAITING_FOR_PACKET"
                         self.current_receive_started_at = datetime.now(timezone.utc)
-                        logger.debug("WEBSOCKET_WAITING_FOR_PACKET timeout_seconds=%.1f", self.RECEIVE_TIMEOUT_SECONDS)
+                        logger.info("WEBSOCKET_WAITING_FOR_PACKET timeout_seconds=%.1f", self.RECEIVE_TIMEOUT_SECONDS)
                         try:
                             message = await asyncio.wait_for(socket.recv(), timeout=self.RECEIVE_TIMEOUT_SECONDS)
                         except asyncio.TimeoutError as exc:
@@ -102,7 +108,7 @@ class DhanWebSocketClient:
                         self.last_packet_received_at = received_at
                         self.packets_received += 1
                         self.websocket_state = "PACKET_RECEIVED"
-                        logger.debug("WEBSOCKET_PACKET_RECEIVED bytes=%d packets=%d", len(message) if isinstance(message, bytes) else 0, self.packets_received)
+                        logger.info("WEBSOCKET_PACKET_RECEIVED packets=%d", self.packets_received)
                         if not isinstance(message, bytes):
                             logger.warning("ignoring non-binary Dhan feed message")
                             continue
